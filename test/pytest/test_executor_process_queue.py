@@ -13,7 +13,7 @@ import chitu.moe.impl as moe_impl_module
 import chitu.serve.common as serve_common
 from chitu.backend import Backend, BackendState
 from chitu.batched_freqs_cis import BatchedFreqsCis
-from chitu.cp_utils import CPContext, NoOpCPContext
+from chitu.cp_utils import CPContextInterleaved, NoOpCPContext
 from chitu.executor import Executor
 from chitu.models.registry import ModelType
 from chitu.models.model import Transformer
@@ -132,7 +132,7 @@ def test_moe_prepare_uses_current_cp_mode_and_local_token_count(monkeypatch, pcp
         cp = (
             NoOpCPContext()
             if pcp_size == 1
-            else CPContext(
+            else CPContextInterleaved(
                 pcp_size, SimpleNamespace(rank_in_group=rank, is_first_rank=rank == 0)
             )
         )
