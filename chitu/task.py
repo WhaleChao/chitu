@@ -36,6 +36,7 @@ from chitu.tool_call import (
     adjust_message_for_tool_calls,
     build_grammar,
 )
+from chitu.tokenizer import pin_assistant_reasoning_content
 from chitu.trace import Trace, TraceLevel
 from chitu.utils import dataclass_to_dict, dataclass_from_dict, max_alloc_seq_len
 from chitu.output_parser import (
@@ -281,6 +282,7 @@ class UserRequest:
         """Tokenize without constructing the event-loop-owned UserRequest."""
         chat_template_kwargs, _, _ = UserRequest._chat_template_state(params)
         messages = adjust_message_for_tool_calls(params.messages)
+        messages = pin_assistant_reasoning_content(messages)
         encoded = Backend.formatter.encode_dialog_prompt(
             messages, chat_template_kwargs=chat_template_kwargs
         )

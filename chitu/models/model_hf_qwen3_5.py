@@ -808,7 +808,7 @@ class TransformerHFQwen3_5(TransformerHFQwen3_5Base):
             rope_theta=float(getattr(self.params, "rope_theta", 5000000.0)),
             rope_scaling=rope_scaling,
         )
-        self.rotary_emb = HFQwen3_5TextRotaryEmbedding(text_cfg, device=device)
+        self.rotary_emb = HFQwen3_5TextRotaryEmbedding(text_cfg).to(device)
 
     @override
     def prepare_freqs_cis(self) -> BatchedFreqsCis:
