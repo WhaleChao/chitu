@@ -155,6 +155,16 @@ class CPContext:
     def step_active(self) -> bool:
         return self._step_active
 
+    def prepare_prefill(self, total_tokens: int) -> int:
+        """Prepare CP metadata before MoE dispatch, without slicing tensors."""
+        self.set_step_active(self._should_split_prefill(total_tokens))
+        self._orig_num_tokens = total_tokens
+        self._n_local = self.compute_pp_num_tokens(total_tokens)
+        self._expected_n_local = (
+            ceil_div(total_tokens, self.pcp_size) if self.step_active else total_tokens
+        )
+        return self._n_local
+
     def split_prefill(
         self,
         tokens: Optional[torch.Tensor],
@@ -171,20 +181,16 @@ class CPContext:
         Collectives pad at their own boundary when equal per-rank shapes are
         required.
         """
-        if not self._should_split_prefill(total_tokens):
-            self.set_step_active(False)
+        self.prepare_prefill(total_tokens)
+        if not self.step_active:
             return tokens, hiddens, freqs_cis
 
         if tokens is None and hiddens is None:
             raise ValueError(f"CP{self.cp_rank}: missing prefill payload")
-        self.set_step_active(True)
-        self._orig_num_tokens = total_tokens
-        self._expected_n_local = ceil_div(self._orig_num_tokens, self.pcp_size)
         device = tokens.device if tokens is not None else hiddens.device
         local_indices = build_cp_local_indices(
             self.cp_rank, self.pcp_size, self._orig_num_tokens, device=device
         )
-        self._n_local = local_indices.shape[0]
         if hiddens is not None and hiddens.shape[0] != self._n_local:
             raise RuntimeError(
                 f"CP{self.cp_rank}: hidden rows {hiddens.shape[0]} != {self._n_local}"
@@ -345,7 +351,7 @@ class CPContext:
 
         In PCP mode, each CP rank only processes its real interleaved local tokens.
         """
-        if num_tokens < self.pcp_size:
+        if not self._should_split_prefill(num_tokens):
             return num_tokens
         return (
             num_tokens - 1 - self.cp_rank
@@ -458,6 +464,9 @@ class NoOpCPContext:
 
     def set_step_active(self, active: bool):
         self.step_active = False
+
+    def prepare_prefill(self, total_tokens: int) -> int:
+        return total_tokens
 
     def split_prefill(self, tokens, hiddens, freqs_cis, total_tokens):
         return tokens, hiddens, freqs_cis

@@ -18,7 +18,6 @@ from chitu.batched_freqs_cis import BatchedFreqsCis
 from chitu.kv_cache import KVCacheBase
 from chitu.cuda_graph import make_dispatched_graphed_callables
 from chitu.dllm.decoder import DLLMDecoder
-from chitu.task_type import TaskType
 from chitu.models.model import (
     MoeGate,
     ParallelMoeBlock,
@@ -784,9 +783,6 @@ class TransformerLLaDA2(TransformerHFLlama):
             )
 
         freqs_cis = self.prepare_freqs_cis()
-
-        if self.moe_impl is not None:
-            self.moe_impl.prepare(TaskType.Prefill, int(tokens.shape[0]))
 
         h = self._pre_layers(tokens)
 

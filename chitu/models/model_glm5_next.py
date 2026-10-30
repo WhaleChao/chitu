@@ -67,7 +67,6 @@ from chitu.ops.linear_attn import (
     _prepare_kimi_delta_gate,
 )
 from chitu.quantization import QuantizationRegistry
-from chitu.task_type import TaskType
 from chitu.tensor_parallel import ColumnParallelLinear, LocalLinear, RowParallelLinear
 from chitu.distributed.parallel_state import get_tp_size
 from chitu.utils import try_import_opt_dep
@@ -1623,7 +1622,7 @@ class TransformerGLM5Next(QwenVLMmCacheCoreMixin, TransformerDeepSeekV3):
         self._clear_backbone_indexer_buffer()
         freqs_cis = self.prepare_freqs_cis()
         delta_total = self.cache_dict["main"].seq_len_delta.delta_total_len
-        tokens, h, freqs_cis, num_tokens = self._prepare_prefill_inputs(
+        tokens, h, freqs_cis, _ = self._prepare_prefill_inputs(
             tokens, freqs_cis, delta_total, args
         )
 
@@ -1633,9 +1632,6 @@ class TransformerGLM5Next(QwenVLMmCacheCoreMixin, TransformerDeepSeekV3):
                 int(tokens.shape[0]),
                 is_decode_stage=False,
             )
-
-        if self.moe_impl is not None:
-            self.moe_impl.prepare(TaskType.Prefill, num_tokens)
 
         h = self._run_non_mtp_layers(h, freqs_cis)
         if self.mtp_size > 1:
@@ -1712,9 +1708,6 @@ class TransformerGLM5Next(QwenVLMmCacheCoreMixin, TransformerDeepSeekV3):
                 int(batch_size),
                 is_decode_stage=False,
             )
-
-        if self.moe_impl is not None:
-            self.moe_impl.prepare(TaskType.Prefill, batch_size)
 
         h = self._run_non_mtp_layers(h, freqs_cis)
 

@@ -1503,12 +1503,6 @@ class Transformer(nn.Module):
                 is_decode_stage=False,
             )
 
-        if self.moe_impl is not None:
-            self.moe_impl.prepare(
-                TaskType.Prefill,
-                int(tokens.shape[0]),
-            )
-
         h = self._pre_layers(tokens, **args)
 
         residual = None
@@ -2090,12 +2084,6 @@ class Transformer(nn.Module):
                 self.cache_dict["main"].seq_len_delta,
                 int(batch_size),
                 is_decode_stage=False,
-            )
-
-        if self.moe_impl is not None:
-            self.moe_impl.prepare(
-                TaskType.Prefill,
-                batch_size,
             )
 
         residual = None

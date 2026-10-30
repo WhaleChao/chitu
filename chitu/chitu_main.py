@@ -1134,6 +1134,12 @@ def _warmup_backend_direct(
         Backend.model.mtp_accept_indices.set(mtp_accept_indices)
 
     if not skip_model_prefill:
+        # Direct warmup bypasses the executor's per-step MoE preparation.
+        num_tokens = Backend.model.cp_context.prepare_prefill(
+            local_max_bs * prefill_seq_len
+        )
+        if Backend.model.moe_impl is not None:
+            Backend.model.moe_impl.prepare(TaskType.Prefill, num_tokens)
         Backend.model.prefill(tokens, prefill_hiddens, output_token_offsets)
 
     # Decode steps

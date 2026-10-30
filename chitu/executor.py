@@ -1239,7 +1239,6 @@ class Executor:
             overlap_prefix = []
             empty_body: list[ProcessStep] = [self.postprocess_send_pp_result]
             prefill_body: list[ProcessStep] = [
-                self._prepare_moe_prefill,
                 self._prepare_global_num_tokens,
                 self._prepare_dllm_prefill_cache,
                 self._dllm_prefill_forward,
@@ -1657,9 +1656,12 @@ class Executor:
 
     def _prepare_moe_prefill(self) -> None:
         """Let the MoE implementation configure its dispatchers for a prefill step."""
+        # Dispatchers need this step's CP mode and actual local rows before
+        # any rank enters either the non-empty or the empty model path.
+        num_tokens = self.cp_context.prepare_prefill(self.ctx.tasks.num_tokens)
         if self.moe_impl is None:
             return
-        self.moe_impl.prepare(TaskType.Prefill, self.ctx.tasks.num_tokens)
+        self.moe_impl.prepare(TaskType.Prefill, num_tokens)
 
     def _prepare_moe_decode(self) -> None:
         """Let the MoE implementation configure its dispatchers for a decode step."""
@@ -2123,9 +2125,18 @@ class Executor:
         prefilling_lengths = self.ctx.prefilling_lengths
         del self.ctx.prefilling_lengths
 
+        assert prefilling_lengths is not None
+        # DLLM processes block-truncated prompts, not tasks.num_tokens rows.
+        # Prepare before the empty path too, so DP ranks issue matching collectives.
+        num_tokens = sum(prefilling_lengths)
+        self.cp_context.set_step_active(False)
+        if self.moe_impl is not None:
+            self.moe_impl.prepare(TaskType.Prefill, num_tokens)
+
         # A batch that is empty, or whose prompts are all shorter than one
-        # block, has nothing for the diffusion forward to refine.
-        if not prefilling_lengths or max(prefilling_lengths) == 0:
+        # block, still participates in the other ranks' MoE communication.
+        if num_tokens == 0:
+            Backend.model.empty_prefill()
             return
 
         batch_size = tasks.num_tasks
@@ -2148,7 +2159,7 @@ class Executor:
             )
         else:
             payload = torch.empty(
-                sum(prefilling_lengths),
+                num_tokens,
                 dtype=self.get_payload_dtype(),
                 device=self.device,
             )

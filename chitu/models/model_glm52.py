@@ -22,7 +22,6 @@ from chitu.checkpoint_prefix import CheckpointPrefix, as_checkpoint_prefix
 from chitu.kv_cache import KVCacheBase
 from chitu.batched_freqs_cis import BatchedFreqsCis
 from chitu.dsa_indexer_backend import DSAIndexer
-from chitu.task_type import TaskType
 from chitu.models.registry import ModelType, register_model
 from chitu.quantization import QuantizationRegistry
 from chitu.quantization.utils import get_layer_id_from_checkpoint_prefix
@@ -677,8 +676,6 @@ class TransformerGLM52(TransformerDeepSeekV3):
                 is_decode_stage=False,
             )
 
-        if self.moe_impl is not None:
-            self.moe_impl.prepare(TaskType.Prefill, int(tokens.shape[0]))
         h = self._pre_layers(tokens, **args)
 
         h = _run_non_mtp_layers(self.non_mtp_layers, h, freqs_cis)
@@ -786,9 +783,6 @@ class TransformerGLM52(TransformerDeepSeekV3):
                 int(batch_size),
                 is_decode_stage=False,
             )
-
-        if self.moe_impl is not None:
-            self.moe_impl.prepare(TaskType.Prefill, batch_size)
 
         h = _run_non_mtp_layers(self.non_mtp_layers, h, freqs_cis)
 
