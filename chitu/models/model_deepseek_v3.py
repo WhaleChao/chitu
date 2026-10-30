@@ -1292,6 +1292,13 @@ class AttentionDeepSeekV3(Attention):
                 else:
                     query_seq_len_delta = seq_len_delta
 
+                use_decode_page_table = (
+                    self.attn_backend.requires_sparse_decode_page_table()
+                    and seq_len_delta.is_classic_decoding
+                    and self.attn_backend.route_to_decode(query_seq_len_delta)
+                    and isinstance(main_cache_accessor, PagedKVCacheAccessor)
+                )
+
                 if has_indexer_weights:
                     assert self.indexer_cache is not None
                     indexer_cache_accessor = self.indexer_cache.get_accessor(
@@ -1316,12 +1323,7 @@ class AttentionDeepSeekV3(Attention):
                         )
                         indexer_k_normed = self.indexer.k_norm(indexer_k_global)
 
-                        if (
-                            self.attn_backend.requires_sparse_decode_page_table()
-                            and seq_len_delta.is_classic_decoding
-                            and isinstance(main_cache_accessor, PagedKVCacheAccessor)
-                            and not force_topk_indices
-                        ):
+                        if use_decode_page_table and not force_topk_indices:
                             topk_page_table = self.indexer.build_decode_topk_page_table(
                                 x,
                                 indexer_q,
@@ -1349,12 +1351,7 @@ class AttentionDeepSeekV3(Attention):
                     else:
                         # Non-CP indexer: unified RoPE
                         assert indexer_q is not None and indexer_k is not None
-                        if (
-                            self.attn_backend.requires_sparse_decode_page_table()
-                            and seq_len_delta.is_classic_decoding
-                            and isinstance(main_cache_accessor, PagedKVCacheAccessor)
-                            and not force_topk_indices
-                        ):
+                        if use_decode_page_table and not force_topk_indices:
                             topk_page_table = self.indexer.build_decode_topk_page_table(
                                 x,
                                 indexer_q,
@@ -1383,13 +1380,7 @@ class AttentionDeepSeekV3(Attention):
                     )
                     if read_reused_topk is not None:
                         topk_indices, topk_page_table = read_reused_topk(
-                            use_page_table=(
-                                self.attn_backend.requires_sparse_decode_page_table()
-                                and seq_len_delta.is_classic_decoding
-                                and isinstance(
-                                    main_cache_accessor, PagedKVCacheAccessor
-                                )
-                            )
+                            use_page_table=use_decode_page_table
                         )
 
                 # ---- MLA attention ----
