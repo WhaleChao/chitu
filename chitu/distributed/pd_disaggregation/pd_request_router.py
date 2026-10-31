@@ -19,6 +19,7 @@ import msgpack
 import zmq
 
 from chitu.distributed.pd_disaggregation.pd_scheduler import PDSchedulerMode
+from chitu.finish_reason import FinishReason
 from chitu.dp_request_router import (
     LoadBalancer,
     PrefixCacheAwarePolicy,
@@ -594,7 +595,9 @@ class PDRequestRouter(RequestRouter):
                     pd_request.request_id,
                 )
             self.finish_request_before_recv_stop(
-                pd_request.original_request, error="decode worker is down"
+                pd_request.original_request,
+                FinishReason.ERROR,
+                error="decode worker is down",
             )
 
     def _remove_prefill_failed_request(self, request_id: str) -> None:
@@ -923,14 +926,16 @@ class PDRequestRouter(RequestRouter):
                 if req.finished:
                     continue
                 seen.add(request_id)
-                token_router.finish_request(req, error=error_msg)
+                token_router.finish_request(req, FinishReason.ERROR, error=error_msg)
         for request_id, pd_req in list(self.pending_pd_requests.items()):
             if request_id in seen:
                 continue
             req = pd_req.original_request
             if req.finished:
                 continue
-            self.finish_request_before_recv_stop(req, error=error_msg)
+            self.finish_request_before_recv_stop(
+                req, FinishReason.ERROR, error=error_msg
+            )
 
     @override
     async def handle_prefill_failed(self, request_id: str) -> None:
@@ -1163,7 +1168,9 @@ class PDRequestRouter(RequestRouter):
         # and the P/D pairing state is released.
         request = self._find_inflight_request(request_id)
         if request is not None and not request.finished:
-            self.finish_request_before_recv_stop(request, finish_reason="aborted")
+            self.finish_request_before_recv_stop(
+                request, finish_reason=FinishReason.ABORTED
+            )
         return True
 
     async def add_request(self, request: UserRequest) -> bool:
@@ -1188,7 +1195,7 @@ class PDRequestRouter(RequestRouter):
             )
             self.finish_request_before_recv_stop(
                 request,
-                finish_reason="error",
+                finish_reason=FinishReason.ERROR,
                 error="No available prefill/decode workers",
             )
             self.total_requests += 1
@@ -1221,7 +1228,9 @@ class PDRequestRouter(RequestRouter):
                         (info["max_seq_len"] for info in schedulers.values()), default=0
                     ),
                 )
-                self.finish_request_before_recv_stop(request, finish_reason="length")
+                self.finish_request_before_recv_stop(
+                    request, finish_reason=FinishReason.LENGTH
+                )
                 return True
         return False
 
@@ -1432,7 +1441,7 @@ class PDRequestRouter(RequestRouter):
             self.prefill_policy.max_support_prompt_length,
             self.decode_policy.max_support_prompt_length,
         ):
-            self.finish_request_before_recv_stop(req, finish_reason="length")
+            self.finish_request_before_recv_stop(req, finish_reason=FinishReason.LENGTH)
             pd_request.status = PDRequestStatus.FAILED
             self.total_requests += 1
             return

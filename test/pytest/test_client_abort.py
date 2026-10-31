@@ -50,8 +50,8 @@ from chitu.dp_request_router import (
 )
 from chitu.global_vars import set_global_args
 from chitu.schemas.serve_config import PDDisaggregationConfig, RouterConfig
+from chitu.finish_reason import FinishReason
 from chitu.serve.abort import (
-    ABORTED_FINISH_REASON,
     run_with_client_abort,
     stream_with_client_abort,
 )
@@ -157,7 +157,7 @@ def _make_request(request_id: str, *, finished: bool = False) -> UserRequest:
         input_len=4, request_id=request_id, enable_thinking=False
     )
     if finished:
-        req.stop_stream()
+        req.stop_stream(FinishReason.STOP)
     return req
 
 
@@ -260,7 +260,7 @@ def test_abort_task_stops_running_task_and_defers_removal():
     assert task.status == TaskStatus.Stopped
     assert task.need_remove()
     assert task.req.finished
-    assert task.req.finish_reason == ABORTED_FINISH_REASON
+    assert task.req.finish_reason == FinishReason.ABORTED
     # A running task owns KV metadata: it must leave through Scheduler.update(),
     # which finalizes that metadata. The pending-remove path would skip it.
     assert "req-running" in TaskCollector._update_task_ids
@@ -301,19 +301,20 @@ def test_abort_task_stops_request_queued_but_not_promoted():
 
     assert task.status == TaskStatus.Stopped
     assert task.req.finished
-    assert task.req.finish_reason == ABORTED_FINISH_REASON
+    assert task.req.finish_reason == FinishReason.ABORTED
     assert "req-queued" in TaskPool.pending_remove
     assert "req-queued" not in TaskCollector._update_task_ids
 
 
 def test_abort_task_keeps_earlier_finish_reason():
     task = _make_task("req-already-done")
-    task.req.finish_reason = "stop"
-    task.req.stop_stream()
+    task.req.stop_stream(FinishReason.LENGTH)
 
     assert abort_task("req-already-done") is True
 
-    assert task.req.finish_reason == "stop"
+    # A late abort must not relabel a request that already ended for its own
+    # reason: the client would otherwise never learn it was truncated.
+    assert task.req.finish_reason is FinishReason.LENGTH
 
 
 def test_router_rejects_new_requests_after_termination_begins():
@@ -726,7 +727,7 @@ def test_pd_manager_abort_request_stops_task_without_telling_peer():
     assert stop_calls == [("pd-instance-abort", True, 0.0)]
     assert task.status == TaskStatus.Stopped
     assert task.req.finished
-    assert task.req.finish_reason == ABORTED_FINISH_REASON
+    assert task.req.finish_reason == FinishReason.ABORTED
 
 
 def test_pd_manager_abort_request_without_kv_manager_uses_abort_task():

@@ -43,8 +43,9 @@ from contextlib import suppress
 from logging import getLogger
 from typing import Any, AsyncIterator, Awaitable, Optional, TypeVar
 
+from chitu.finish_reason import FinishReason
 from chitu.global_vars import get_global_args
-from chitu.task import ABORTED_FINISH_REASON, abort_task
+from chitu.task import abort_task
 
 logger = getLogger(__name__)
 
@@ -210,7 +211,7 @@ async def abort_request(
         return True
 
     # Single instance: the engine and this process share TaskPool.
-    return abort_task(request_id, finish_reason=ABORTED_FINISH_REASON)
+    return abort_task(request_id, finish_reason=FinishReason.ABORTED)
 
 
 def _warn_missing_hook() -> None:

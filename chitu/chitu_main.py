@@ -19,6 +19,7 @@ import msgpack
 
 from chitu.backend import Backend, BackendState
 from chitu.device_type import is_nvidia, has_accelerator
+from chitu.finish_reason import FinishReason
 from chitu.global_vars import (
     get_global_args,
     get_multi_inst_config,
@@ -1775,7 +1776,7 @@ def chitu_run_main_rank():
             task = TaskPool.pool.get(task_id)
             if task is None:
                 continue  # already cleaned up (e.g. pd_decode_fail won the race)
-            task.req.finish_reason = "prefill_only"
+            task.req.set_finish_reason(FinishReason.PREFILL_ONLY)
             task.set_stopped()
         task_ids += transfer_done_ids
     task_ids = TaskPool.id_list

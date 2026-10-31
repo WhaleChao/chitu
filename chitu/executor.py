@@ -18,6 +18,7 @@ import torch.distributed
 
 from chitu.cp_utils import get_cp_context
 from chitu.backend import Backend, BackendState
+from chitu.finish_reason import FinishReason
 from chitu.global_vars import (
     get_global_args,
     get_slot_handle,
@@ -2325,14 +2326,14 @@ class Executor:
                     if has_eos_list[i]:
                         task.set_stopped()
                         if task.req is not None:
-                            task.req.finish_reason = "stop"
+                            task.req.set_finish_reason(FinishReason.STOP)
                     elif (
                         task.req is not None
                         and task.req.num_output_tokens + block_length
                         >= task.req.max_new_tokens
                     ):
                         task.set_stopped()
-                        task.req.finish_reason = "length"
+                        task.req.set_finish_reason(FinishReason.LENGTH)
                     task.next_block = None
 
             if block_finished_tasks:
@@ -2389,7 +2390,9 @@ class Executor:
             if task.req is None:
                 continue
             if task.user_request_finished() and not task.req.finished:
-                task.req.stop_stream()
+                # UNKNOWN here means nobody recorded a reason; the API layer
+                # reports an error for it.
+                task.req.stop_stream(task.req.finish_reason)
             else:
                 task.req.notify_server_data_added_threadsafe()
         TaskCollector.add_update_task_ids(block_tasks.task_ids)

@@ -16,6 +16,7 @@ from chitu import backend as backend_module
 from chitu import hooks as hooks_module
 from chitu import task as task_module
 from chitu.hooks import MooncakeKVTransferHook
+from chitu.finish_reason import FinishReason
 from chitu.task import PromptTooLongError, TaskType, TaskStatus, UserRequest, Task
 from chitu.global_vars import get_global_args
 from chitu.utils import max_alloc_seq_len
@@ -237,7 +238,7 @@ class TestUpdateDecodeStatus:
         assert t.task_type == TaskType.Decode
         assert t.status != TaskStatus.Stopped
         assert not t.need_remove()
-        assert t.req.finish_reason is None
+        assert t.req.finish_reason is FinishReason.UNKNOWN
 
     def test_task_with_synced_tokens_at_limit_stopped(self):
         """synced tokens == max_new_tokens → stopped."""
@@ -256,7 +257,7 @@ class TestUpdateDecodeStatus:
     def test_already_stopped_task_unchanged(self):
         t = _make_decode_task("req", max_new_tokens=1)
         t.set_stopped()
-        t.req.finish_reason = "stop"
+        t.req.finish_reason = FinishReason.STOP
         t.update_decode_status([])
         assert t.req.finish_reason == "stop"
 
@@ -368,7 +369,7 @@ class TestPrefillOnlyHookFinalization:
         hook.on_prefill_done(tasks=tasks)
         assert output.status != TaskStatus.Stopped
         assert middle.status != TaskStatus.Stopped
-        assert middle.req.finish_reason is None
+        assert middle.req.finish_reason is FinishReason.UNKNOWN
 
     def test_no_tasks_is_noop(self, monkeypatch):
         hook = self._make_hook(monkeypatch)

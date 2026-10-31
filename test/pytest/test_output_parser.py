@@ -43,6 +43,7 @@ import chitu.serve.responses_api as responses
 from chitu.async_stream import AsyncDataStream
 from chitu.backend import Backend
 from chitu.dp_token_sender import DPAsyncDataStream, DPTokenSender
+from chitu.finish_reason import FinishReason
 from chitu.global_vars import set_global_args
 from chitu.output_parser import (
     OutputParser,
@@ -1450,7 +1451,7 @@ def test_holdback_flush_attributes_content_tail_before_marker(monkeypatch):
 # stripping as the client sees it. Same tokenizer setting as section 1d.
 
 
-def _make_req(monkeypatch, reason="stop"):
+def _make_req(monkeypatch, reason=FinishReason.STOP):
     req = SimpleNamespace(
         request_id="req-glm53",
         prompt_len=10,
@@ -1690,7 +1691,7 @@ def test_k3_chat_completion_clean(monkeypatch, streaming):
     req = SimpleNamespace(
         request_id="req-k3",
         prompt_len=10,
-        finish_reason="stop",
+        finish_reason=FinishReason.STOP,
         tool_call_params=None,
         response_format_params=None,
         logprobs=False,
@@ -1767,7 +1768,7 @@ def test_k3_chat_completion_tool_calls(monkeypatch, streaming):
     req = SimpleNamespace(
         request_id="req-k3-tools",
         prompt_len=10,
-        finish_reason="stop",
+        finish_reason=FinishReason.STOP,
         tool_call_params=SimpleNamespace(tools=K3_TEST_TOOLS),
         response_format_params=None,
         logprobs=False,
@@ -1830,7 +1831,7 @@ def test_k3_call_looking_text_in_response_is_content(monkeypatch, streaming):
     req = SimpleNamespace(
         request_id="req-k3-quote",
         prompt_len=10,
-        finish_reason="stop",
+        finish_reason=FinishReason.STOP,
         tool_call_params=SimpleNamespace(tools=K3_TEST_TOOLS),
         response_format_params=None,
         logprobs=False,
@@ -1914,7 +1915,7 @@ def _k3_serve_req(monkeypatch, *, request_id, tools, tokens):
     req = SimpleNamespace(
         request_id=request_id,
         prompt_len=10,
-        finish_reason="stop",
+        finish_reason=FinishReason.STOP,
         tool_call_params=SimpleNamespace(tools=tools) if tools else None,
         response_format_params=None,
         logprobs=False,
@@ -2421,7 +2422,7 @@ def test_dp_token_replay_counts_reasoning_once(monkeypatch):
     )
     # live_req uses token 0 as EOS; it must not enter output or reasoning usage.
     worker.add_data([1, 5, 2, 3, 0])
-    worker.stop_stream()
+    worker.stop_stream(FinishReason.STOP)
     receiver = live_req(monkeypatch)
     receiver.async_stream = new_usage_stream(monkeypatch)
     monkeypatch.setattr(Backend, "tokenizer", SimpleNamespace(stop_tokens={0}))
@@ -2509,7 +2510,7 @@ def test_dp_token_replay_raw_output(monkeypatch):
     )
     for token in tokens:
         worker.add_data(token)
-    worker.stop_stream()
+    worker.stop_stream(FinishReason.STOP)
 
     router = router_module.TokenRouter(SimpleNamespace())
     router.active_requests[receiver.request_id] = receiver

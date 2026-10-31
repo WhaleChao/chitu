@@ -11,6 +11,7 @@ from typing_extensions import override
 from collections import deque
 
 from chitu.kv_cache.manager_names import MAIN_CACHE_NAME
+from chitu.finish_reason import FinishReason
 from chitu.task import TaskPool, TaskType, Task, TaskStatus
 from chitu.global_vars import get_global_args, SlotHandle, is_pd_prefill_only
 from chitu.hooks import TaskEvictHook, NoopTaskEvictHook
@@ -255,7 +256,10 @@ class Scheduler:
         def _default_capacity_error(request_id: str, message: str) -> None:
             task = TaskPool.pool.get(request_id)
             if task is not None and task.req is not None and not task.req.finished:
-                task.req.stop_stream(error=message)
+                # The prompt did not fit the KV budget, so the sequence is cut
+                # short. The client gets the error message; "length" is recorded
+                # for the server-side view of why the request ended.
+                task.req.stop_stream(FinishReason.LENGTH, error=message)
 
         self._pd_exceeds_capacity_callback: Callable[[str, str], None] = (
             _default_capacity_error
@@ -504,7 +508,7 @@ class Scheduler:
                 continue
 
             task.set_stopped()
-            req.finish_reason = "error"
+            req.set_finish_reason(FinishReason.ERROR)
             # PD hook (injected in PREFILL_ONLY): report the TTFT failure with the
             # prefill_failed flag so the paired Decode is notified — without it
             # D waits until the wait-for-KV timeout. When the hook is present it
@@ -528,7 +532,7 @@ class Scheduler:
                     req.async_stream.stop_signal = True
                     req.completion_time = time.monotonic()
                 else:
-                    req.stop_stream(error="TTFT timeout")
+                    req.stop_stream(FinishReason.ERROR, error="TTFT timeout")
             TaskPool.remove(task_id)
             inc_request_timeouts("ttft_scheduler")
             logger.warning(
@@ -567,9 +571,12 @@ class Scheduler:
                     "PD capacity-error callback failed for task %s", task_id
                 )
             if task.req is not None:
-                task.req.finish_reason = "length"
                 task.req.async_stream.stop_signal = True
                 task.req.completion_time = time.monotonic()
+
+        if task.req is not None:
+            # The KV budget cut the sequence, not the model: "length".
+            task.req.set_finish_reason(FinishReason.LENGTH)
 
         has_kv_cache = any(
             cache_manager.num_owned_blocks(task) > 0

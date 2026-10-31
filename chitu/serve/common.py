@@ -17,6 +17,7 @@ import torch.distributed
 from fastapi import HTTPException
 
 from chitu.global_vars import get_global_args
+from chitu.finish_reason import FinishReason
 from chitu.profiler import MemoryRecorder, ProfileManager
 from chitu.task import (
     Task,
@@ -32,6 +33,35 @@ from chitu.serve.crash import report_and_exit
 from chitu.serve.errors import ServiceShuttingDown
 
 logger = getLogger(__name__)
+
+
+def require_reportable(request: UserRequest) -> FinishReason:
+    """Return the reason to report, or raise for reasons a client cannot see.
+
+    A reason whose ``is_error()`` is true raises a ``RuntimeError`` carrying the
+    engine's own error message; the interfaces turn that into their error
+    response. Other non-reportable reasons are mapped to a protocol value, so
+    they only get a log line.
+    """
+    reason = request.finish_reason
+    if reason.is_error():
+        logger.error("request %s ended with reason %s", request.request_id, reason)
+        raise RuntimeError(
+            request.async_stream.error_message
+            or (
+                "the request ended with an internal engine error"
+                if reason is FinishReason.ERROR
+                else "the request ended without a recorded finish reason"
+            )
+        )
+    if not reason.is_reportable():
+        logger.error(
+            "request %s ended with reason %s; reporting the interface's closest value",
+            request.request_id,
+            reason,
+        )
+    return reason
+
 
 # Global variables for serve module
 min_batch_size = 1

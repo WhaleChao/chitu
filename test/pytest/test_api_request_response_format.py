@@ -30,6 +30,7 @@ import chitu.serve.responses_api as responses_api
 import chitu.task as task
 import chitu.tool_call.grammar.utils as grammar_utils
 import chitu.tool_call.utils as tool_call_utils
+from chitu.finish_reason import FinishReason
 from chitu.output_parser.type_def import OutputParserParams
 from chitu.tool_call import (
     ResponseFormatParams,
@@ -609,7 +610,7 @@ def create_chat_client(monkeypatch, captured):
         captured.append(req)
         # stand in for generation: one JSON chunk, then a clean stop
         req.async_stream = StaticStream([(VALID_SAFETY_JSON, False, (None, None))])
-        req.finish_reason = "stop"
+        req.finish_reason = FinishReason.STOP
 
     monkeypatch.setattr(openai_api, "submit_request", submit)
     return TestClient(api_server.app, raise_server_exceptions=False)
@@ -835,7 +836,7 @@ def create_responses_client(monkeypatch, captured):
     async def submit(req):
         captured.append(req)
         req.async_stream = StaticStream([("hi", False, (None, None))])
-        req.finish_reason = "stop"
+        req.finish_reason = FinishReason.STOP
 
     monkeypatch.setattr(responses_api, "submit_request", submit)
     api_server.set_server_status(initialized=True)

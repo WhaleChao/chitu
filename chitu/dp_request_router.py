@@ -16,6 +16,7 @@ import time
 import traceback
 from collections import defaultdict, deque, OrderedDict
 from dataclasses import dataclass, field
+from chitu.finish_reason import FinishReason
 from chitu.global_vars import (
     get_global_args,
     get_multi_inst_config,
@@ -829,7 +830,7 @@ class RequestRouter:
             max(0.0, now - request.ttft_deadline_ts),
         )
         self.finish_request_before_recv_stop(
-            request, finish_reason="error", error="TTFT timeout"
+            request, finish_reason=FinishReason.ERROR, error="TTFT timeout"
         )
         return True
 
@@ -1090,26 +1091,26 @@ class RequestRouter:
                 if req.finished:
                     continue
                 seen.add(request_id)
-                token_router.finish_request(req, error=error_msg)
+                token_router.finish_request(req, FinishReason.ERROR, error=error_msg)
         for request in list(self.pending_requests):
             request_id = request.request_id
             if request_id is None or request_id in seen:
                 continue
             if request.finished:
                 continue
-            self.finish_request_before_recv_stop(request, error=error_msg)
+            self.finish_request_before_recv_stop(
+                request, FinishReason.ERROR, error=error_msg
+            )
 
     def finish_request_before_recv_stop(
         self,
         request: UserRequest,
-        finish_reason: Optional[str] = None,
+        finish_reason: FinishReason,
         error: Optional[str] = None,
     ):
         """Finish request before receiving stop signal."""
-        if finish_reason is not None:
-            request.finish_reason = finish_reason
         was_finished = request.finished
-        request.stop_stream(error=error)
+        request.stop_stream(finish_reason, error=error)
         if not was_finished and request.completion_time > 0:
             observe_e2e_duration(request.completion_time - request.start_time)
         token_router = get_token_router()
@@ -1178,7 +1179,9 @@ class RequestRouter:
         # and release the load reservation / prefix-cache state for this request.
         request = self._find_inflight_request(request_id)
         if request is not None and not request.finished:
-            self.finish_request_before_recv_stop(request, finish_reason="aborted")
+            self.finish_request_before_recv_stop(
+                request, finish_reason=FinishReason.ABORTED
+            )
         return True
 
     def _length_routing_candidates(
@@ -1228,7 +1231,7 @@ class RequestRouter:
                     ):
                         # Prompt length exceeds the prefill kv cache capacity, stop request with finish_reason=length
                         self.finish_request_before_recv_stop(
-                            request, finish_reason="length"
+                            request, finish_reason=FinishReason.LENGTH
                         )
                         self.total_requests += 1
                         await asyncio.sleep(0.001)
@@ -1402,7 +1405,9 @@ class RequestRouter:
                     if req is not None and not req.finished:
                         remove_requests.append(req)
         for request in remove_requests:
-            self.finish_request_before_recv_stop(request, error="chitu serve is down")
+            self.finish_request_before_recv_stop(
+                request, FinishReason.ERROR, error="chitu serve is down"
+            )
 
     async def submit_request(self, request: UserRequest):
         """Add request to processing queue."""

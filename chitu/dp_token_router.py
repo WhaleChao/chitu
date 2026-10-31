@@ -17,6 +17,7 @@ import zmq.asyncio
 import msgpack
 import logging
 
+from chitu.finish_reason import FinishReason
 from chitu.task import UserRequest
 from chitu.distributed.coordinator import set_endpoint
 from chitu.boot.tcp_ip import get_local_ip
@@ -140,13 +141,11 @@ class TokenRouter:
     def finish_request(
         self,
         request: UserRequest,
-        finish_reason: Optional[str] = None,
+        finish_reason: FinishReason,
         error: Optional[str] = None,
         num_hit_tokens: Optional[int] = None,
     ):
         """Finalize request, stop output stream and remove request data in all DP components"""
-        if finish_reason is not None:
-            request.finish_reason = finish_reason
         if num_hit_tokens is not None:
             request.num_hit_tokens = num_hit_tokens
         request_router = get_request_router(check_exist=False)
@@ -157,7 +156,7 @@ class TokenRouter:
         ):
             request_router.finalize_request_cache(request.request_id)
         was_finished = request.finished
-        request.stop_stream(error=error)
+        request.stop_stream(finish_reason, error=error)
         if not was_finished and request.completion_time > 0:
             observe_e2e_duration(request.completion_time - request.start_time)
         remove_request_everywhere(request.request_id)
@@ -338,7 +337,9 @@ class TokenRouter:
                 self._last_stats_log_ts = now
 
         elif token_data.get("type") == "finish":
-            finish_reason = token_data.get("finish_reason", "stop")
+            # Wire frame -> member; a missing or unknown spelling is a protocol
+            # violation and raises here.
+            finish_reason = FinishReason(token_data["finish_reason"])
             # Update active requests gauge
             from chitu.metrics.prometheus_collector import set_active_requests
 
@@ -352,10 +353,7 @@ class TokenRouter:
             )
 
             # Request completed
-            self.finish_request(
-                req,
-                finish_reason=finish_reason,
-            )
+            self.finish_request(req, finish_reason)
 
         elif token_data.get("type") == "evict":
             # For multi instance, evicting is handled by each instance and would not raise to Router
@@ -414,6 +412,7 @@ class TokenRouter:
             # Send stop signal and cleanup
             self.finish_request(
                 req,
+                FinishReason.ERROR,
                 error=error_message,
             )
 
@@ -450,7 +449,9 @@ class TokenRouter:
                         logger.warning(
                             f"Token Router: Request {request.request_id} timed out, cleaning up"
                         )
-                        self.finish_request(request, error="Timeout error")
+                        self.finish_request(
+                            request, FinishReason.ERROR, error="Timeout error"
+                        )
                     except Exception:
                         # Isolate single-request cleanup fault; keep watchdog alive.
                         logger.exception(
@@ -469,7 +470,9 @@ class TokenRouter:
         """Stop active streams but keep token receivers alive during instance drain."""
         self._terminating = True
         for req in list(self.active_requests.values()):
-            req.stop_stream()
+            # The Router is going away mid-request: the answer is incomplete, so
+            # the client must see an error rather than a normal finish.
+            req.stop_stream(FinishReason.ERROR, error="token router shutting down")
         self.active_requests.clear()
 
     async def shutdown(self):
@@ -479,7 +482,7 @@ class TokenRouter:
         self._terminating = True
 
         for req in list(self.active_requests.values()):
-            req.stop_stream()
+            req.stop_stream(FinishReason.ERROR, error="token router shutting down")
         self.active_requests.clear()
 
         for task in self._tasks:

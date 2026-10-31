@@ -17,6 +17,7 @@ from chitu.serve.api_docs import DocField
 from chitu.serve.model_names import resolve_model_name
 from chitu.tool_call.type_def import ChoiceToolCall, ToolConfig
 from chitu.serve.request_id import gen_req_id
+from chitu.finish_reason import FinishReason
 
 DOC_GENERATION = os.environ.get("CHITU_GENERATING_DOCS") == "1"
 
@@ -34,6 +35,7 @@ if not DOC_GENERATION:
     )
     from chitu.serve.common import (
         build_chat_template_kwargs,
+        require_reportable,
         submit_request,
     )
     from chitu.serve.abort import (
@@ -536,16 +538,35 @@ async def collect_reasoning_and_text(async_stream) -> tuple[str, str, str]:
     return "".join(rchunks), "".join(chunks), "".join(tchunks)
 
 
-def map_finish_reason_to_stop_reason(finish_reason: Optional[str]) -> str:
-    if finish_reason == "length":
-        return "max_tokens"
-    return "end_turn"
+# Only what differs from both endpoints' defaults ("end_turn" / "stop_sequence").
+_STOP_REASON_OVERRIDES: dict[FinishReason, str] = {FinishReason.LENGTH: "max_tokens"}
 
 
-def map_finish_reason_to_completion_stop_reason(finish_reason: Optional[str]) -> str:
-    if finish_reason == "length":
-        return "max_tokens"
-    return "stop_sequence"
+def _stop_reason(finish_reason: FinishReason, default: str) -> str:
+    """Map a reportable reason to ``default`` unless this endpoint overrides it."""
+    return _STOP_REASON_OVERRIDES.get(finish_reason, default)
+
+
+def map_finish_reason_to_stop_reason(finish_reason: FinishReason) -> str:
+    """Anthropic messages: "the model finished on its own" is ``end_turn``.
+
+    The default lives here rather than at the call site so the endpoint's value
+    is written once and the tests can pin it.
+    """
+    return _stop_reason(finish_reason, "end_turn")
+
+
+def map_finish_reason_to_completion_stop_reason(finish_reason: FinishReason) -> str:
+    """The legacy completions API spells the same thing ``stop_sequence``."""
+    return _stop_reason(finish_reason, "stop_sequence")
+
+
+def _sse_error_event(message: str) -> str:
+    """Anthropic's error event, for failures discovered after the stream began."""
+    return _sse_event(
+        "error",
+        {"type": "error", "error": {"type": "api_error", "message": message}},
+    )
 
 
 def _token_exists(tokenizer, token: str) -> bool:
@@ -770,7 +791,11 @@ async def anthropic_stream_from_async_stream(
             next_index += 1
             block_index = next_index - 1
 
-    stop_reason = map_finish_reason_to_stop_reason(user_req.finish_reason)
+    try:
+        stop_reason = map_finish_reason_to_stop_reason(require_reportable(user_req))
+    except RuntimeError as exc:
+        yield _sse_error_event(str(exc))
+        return
     if tool_call_buffers and not saw_text and stop_reason == "end_turn":
         stop_reason = "tool_use"
     yield _sse_event(
@@ -804,7 +829,13 @@ async def anthropic_completion_stream_from_async_stream(
             }
         )
 
-    stop_reason = map_finish_reason_to_completion_stop_reason(req.finish_reason)
+    try:
+        stop_reason = map_finish_reason_to_completion_stop_reason(
+            require_reportable(req)
+        )
+    except RuntimeError as exc:
+        yield _sse_error_event(str(exc))
+        return
     yield _sse_data(
         {
             "type": "completion",
@@ -908,7 +939,7 @@ async def handle_messages_request(
         response_text, request.stop_sequences
     )
     stop_reason = stop_reason_override or map_finish_reason_to_stop_reason(
-        user_req.finish_reason
+        require_reportable(user_req)
     )
     tool_calls = []
 
@@ -1029,7 +1060,7 @@ async def handle_completion_request(
         output_text, request.stop_sequences
     )
     stop_reason = stop_reason_override or map_finish_reason_to_completion_stop_reason(
-        user_req.finish_reason
+        require_reportable(user_req)
     )
     return JSONResponse(
         {

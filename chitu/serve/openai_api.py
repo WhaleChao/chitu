@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from chitu.finish_reason import FinishReason
 from chitu.serve.request_id import gen_req_id
 from chitu.serve.api_docs import DocField
 from chitu.serve.model_names import resolve_model_name
@@ -26,6 +27,7 @@ if not DOC_GENERATION:
     from chitu.global_vars import get_global_args
     from chitu.task import PromptTooLongError, UserRequest, RequestParams
     from chitu.serve.common import (
+        require_reportable,
         set_min_batch_size,
         submit_request,
         build_chat_template_kwargs,
@@ -371,6 +373,20 @@ class ChatCompletionChunk(ChatCompletionResponse):
     object: Literal["chat.completion.chunk"] = "chat.completion.chunk"
 
 
+# Only what differs from the default ("stop").
+_CHAT_FINISH_REASONS: dict[FinishReason, str] = {
+    FinishReason.LENGTH: "length",
+    FinishReason.TOOL_CALLS: "tool_calls",
+    FinishReason.CONTENT_FILTER: "content_filter",
+}
+
+# Legacy completions have no tool-call value.
+_COMPLETION_FINISH_REASONS: dict[FinishReason, str] = {
+    FinishReason.LENGTH: "length",
+    FinishReason.CONTENT_FILTER: "content_filter",
+}
+
+
 class AsyncResponse:
     def __init__(self, req: UserRequest, *, response_model: str, created: int):
         self.req = req
@@ -384,10 +400,11 @@ class AsyncResponse:
             self.tool_parser = None
 
     def _finish_reason(self, has_tool_calls: bool):
-        reason = self.req.finish_reason
-        if reason is None:
-            raise ValueError("Completed chat request has no finish reason")
-        return "tool_calls" if has_tool_calls and reason != "length" else reason
+        reason = require_reportable(self.req)
+        wire = _CHAT_FINISH_REASONS.get(reason, "stop")
+        # A tool call outranks "stop", but not a truncated sequence: "length" is
+        # the value the client uses to decide whether to continue.
+        return "tool_calls" if has_tool_calls and wire != "length" else wire
 
     def _usage(self):
         cached = self.async_stream.input_cached_tokens
@@ -937,7 +954,9 @@ class CompletionAsyncResponse:
                         )
                         yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
 
-                finish_reason = self.req.finish_reason or "stop"
+                finish_reason = _COMPLETION_FINISH_REASONS.get(
+                    require_reportable(self.req), "stop"
+                )
                 usage = self._usage() if include_usage else None
                 chunk = CompletionResponse(
                     id=self.id,
@@ -987,7 +1006,9 @@ class CompletionAsyncResponse:
                     "index": 0,
                     "text": text,
                     "logprobs": None,
-                    "finish_reason": self.req.finish_reason or "stop",
+                    "finish_reason": _COMPLETION_FINISH_REASONS.get(
+                        require_reportable(self.req), "stop"
+                    ),
                 }
             ],
             usage=self._usage(),

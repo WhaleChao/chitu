@@ -17,6 +17,7 @@ from logging import getLogger
 from typing import Any, Optional, TYPE_CHECKING
 from dataclasses import dataclass, field
 
+from chitu.finish_reason import FinishReason
 from chitu.task import (
     Task,
     TaskPool,
@@ -25,7 +26,6 @@ from chitu.task import (
     TaskCollector,
     TaskStatus,
     abort_task,
-    ABORTED_FINISH_REASON,
 )
 from chitu.global_vars import get_global_args
 from chitu.kv_cache.manager_names import MAIN_CACHE_NAME
@@ -368,7 +368,7 @@ class PDInstanceRequestManager:
             return False
 
         request_id = task.task_id
-        req.finish_reason = "error"
+        req.set_finish_reason(FinishReason.ERROR)
         self.stop_request(request_id, force_stop=True, timeout=0.0)
         if self.token_manager is not None:
             # P TTFT timeout: notify D (prefill_failed). D TTFT timeout: notify P (decode_failed).
@@ -418,8 +418,7 @@ class PDInstanceRequestManager:
         if req is not None and not req.finished:
             # Ends this instance's token stream so it stops sending tokens for a
             # request the Router has already dropped.
-            req.finish_reason = ABORTED_FINISH_REASON
-            req.stop_stream()
+            req.stop_stream(FinishReason.ABORTED)
         return stopped
 
     async def process_request(self, request_data: dict[str, Any]):

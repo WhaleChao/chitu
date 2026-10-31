@@ -478,6 +478,9 @@ class PDSchedulerService:
                 if task is None:
                     continue
                 req = getattr(task, "req", None)
+                # The snapshot is packed with msgpack for the stats socket, so a
+                # FinishReason member has to go out as its spelling.
+                finish_reason = getattr(req, "finish_reason", None)
                 task_snapshot.append(
                     {
                         "task_id": task_id,
@@ -489,7 +492,9 @@ class PDSchedulerService:
                         "has_unsync_new_token": getattr(
                             task, "has_unsync_new_token", None
                         ),
-                        "finish_reason": getattr(req, "finish_reason", None),
+                        "finish_reason": (
+                            None if finish_reason is None else str(finish_reason)
+                        ),
                         "request_id": getattr(req, "request_id", None),
                     }
                 )
