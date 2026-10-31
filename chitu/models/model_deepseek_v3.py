@@ -450,9 +450,15 @@ class Indexer(torch.nn.Module):
                 else delta_view.new.lens_tensor_device[row_seq_ids]
             )
             # May select some out-of-range items as -inf, which is fine.
-            return self.indexer_impl.topk_indices(
+            indices = self.indexer_impl.topk_indices(
                 logits, k_topk, delta_view, lengths=lengths
             )
+            # Keep the same output width across query chunks.
+            if indices.shape[-1] < self.index_topk:
+                indices = F.pad(
+                    indices, (0, self.index_topk - indices.shape[-1]), value=-1
+                )
+            return indices
 
         empty_output = torch.empty(
             0,

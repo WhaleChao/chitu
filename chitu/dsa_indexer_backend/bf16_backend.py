@@ -13,6 +13,7 @@ from chitu.ops import (
     append_to_paged_kv_cache,
     read_from_paged_kv_cache,
     bf16_index_score_ragged_qk_dsv32,
+    bf16_index_score_paged_kv,
 )
 
 
@@ -102,8 +103,41 @@ class BF16Indexer(DSAIndexer):
 
     _index_score = bf16_index_score_dsa_bf16
 
-    def _decode_score(self, q, weights, seq_len_delta, cache_accessor):
-        raise NotImplementedError
+    def _decode_score(
+        self,
+        q,
+        weights,
+        seq_len_delta,
+        cache_accessor,
+        *,
+        page_table=None,
+        context_lens=None,
+        score_width=None,
+    ):
+        if page_table is None:
+            page_table = cache_accessor.block_table
+        batch = page_table.shape[0]
+        queries = q.shape[0] // batch if batch else 1
+        if context_lens is None:
+            lengths = seq_len_delta.new.lens_tensor_device
+            context_lens = (
+                lengths[:, None]
+                - queries
+                + torch.arange(queries, device=q.device, dtype=lengths.dtype)
+                + 1
+            ).clamp_min(0)
+        else:
+            # DCP already supplies the visible local length for each query row.
+            context_lens = context_lens.reshape(batch, queries)
+        return bf16_index_score_paged_kv(
+            q.reshape(batch, queries, *q.shape[1:]),
+            weights,
+            cache_accessor.kv["indexer_k"],
+            page_table,
+            context_lens,
+            self.static_max_n if score_width is None else score_width,
+            impl="triton" if self.impl == "triton_bf16" else "torch",
+        )
 
     def _prefill_schedule(self, ks, ke, is_causal, *, seq_len_delta=None):
         return None, ks, ke

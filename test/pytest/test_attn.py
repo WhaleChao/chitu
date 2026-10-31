@@ -50,7 +50,6 @@ from chitu.ops import (
     convert_req_index_to_global_ragged_index,
     dsa_fp8_paged_kvcache_read_dequant,
     read_from_paged_kv_cache,
-    bf16_index_score_ragged_q_paged_k_dsv32,
     bf16_index_score_ragged_qk_dsv32,
     apply_rotary_pos_emb_partial,
     hadamard_transform,

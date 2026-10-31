@@ -82,8 +82,9 @@ class DSAIndexer:
         # 可被寻址的最大长度（含 MTP draft / ghost token，见 chitu/utils.max_alloc_seq_len）
         self.static_max_n = max_alloc_seq_len(args.infer.max_seq_len)
         self.index_topk = args.models.get("index_topk", 2048) or 2048
-        if (val := getattr(args.infer, "indexer_logits_chunk_bytes", None)) is int:
-            DSAIndexer._indexer_logits_chunk_bytes = val
+        chunk_bytes = getattr(args.infer, "indexer_logits_chunk_bytes", None)
+        if isinstance(chunk_bytes, int):
+            DSAIndexer._indexer_logits_chunk_bytes = chunk_bytes
         self.mtp_size = getattr(args.infer, "mtp_size", 1)
         self._init_backend(args)
         logger.info(f"Indexer Backend is initialized with impl={self.impl}")

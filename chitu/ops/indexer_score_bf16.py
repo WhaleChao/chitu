@@ -13,23 +13,76 @@ triton, has_triton = try_import_platform_dep("triton")
 
 if has_triton:
     from chitu.ops.triton_ops import (
-        bf16_index_score_ragged_q_paged_k_dsv32_triton,
+        bf16_index_score_paged_kv_triton,
         bf16_index_score_ragged_qk_dsv32_triton,
     )
 
 
 @make_op_dispatcher
-def bf16_index_score_ragged_q_paged_k_dsv32(
-    q: torch.Tensor,  # [s_q, H, D] bf16
-    weights: torch.Tensor,  # [s_q, H] fp32
-    k_cache: torch.Tensor,  # [n_pages, page_size, D] bf16
-    seq_len_delta: BatchedSeqLenDelta,
-    k_page_table: torch.Tensor,  # [b, n_pages_per_seq]
-    max_seq_len: int,
+def bf16_index_score_paged_kv(
+    q: torch.Tensor,  # [B,M,H,D]
+    weights: torch.Tensor,  # [B*M,H]
+    k_cache: torch.Tensor,  # [N,PAGE_SIZE,D]
+    page_table: torch.Tensor,  # [B,P]
+    context_lens: torch.Tensor,  # [B,M]
+    score_width: int,
     impl: str = "auto",
-) -> torch.Tensor:  # [s_q, max_seq_len]
-    """Decode-stage bf16 paged MQA index score."""
+) -> torch.Tensor:
+    """Score paged KV for Q[B,M,H,D], returning FP32[B*M,score_width].
+
+    context_lens[b,m] is the visible key count for that query. The caller
+    supplies causal bounds and localizes them when KV is sharded.
+    """
     raise NotImplementedError
+
+
+@bf16_index_score_paged_kv.register_auto
+def _auto_bf16_index_score_paged_kv(q, *args, **kwargs):
+    return "triton" if q.is_cuda and has_triton else "torch"
+
+
+@bf16_index_score_paged_kv.register("torch")
+def bf16_index_score_paged_kv_torch(
+    q, weights, k_cache, page_table, context_lens, score_width
+):
+    batch, queries, heads, dim = q.shape
+    out = torch.full(
+        (batch * queries, score_width), -torch.inf, dtype=torch.float32, device=q.device
+    )
+    width = min(page_table.shape[1] * k_cache.shape[1], score_width)
+    if batch == 0 or width == 0:
+        return out
+    k_cache = k_cache.view(k_cache.shape[0], k_cache.shape[1], -1)
+    page_starts = torch.arange(page_table.shape[1], device=q.device) * k_cache.shape[1]
+    # Unused page-table entries need not contain valid physical page IDs.
+    valid_pages = (page_table >= 0) & (
+        page_starts[None, :] < context_lens.amax(dim=1, keepdim=True).clamp_max(width)
+    )
+    page_ids = torch.where(valid_pages, page_table, 0).long()
+    keys = k_cache[page_ids].reshape(batch, -1, dim)
+    logits = torch.matmul(q, keys.transpose(1, 2).unsqueeze(1))
+    scores = (
+        (
+            torch.relu(logits)
+            * weights.reshape(batch, queries, heads).to(logits.dtype).unsqueeze(-1)
+        )
+        .sum(dim=2)
+        .float()
+    )
+    positions = torch.arange(width, device=q.device)
+    valid = positions[None, None, :] < context_lens[:, :, None]
+    valid = valid & valid_pages[:, positions // k_cache.shape[1]][:, None, :]
+    out[:, :width] = (
+        scores[:, :, :width]
+        .masked_fill(~valid, -torch.inf)
+        .reshape(batch * queries, width)
+    )
+    return out
+
+
+bf16_index_score_paged_kv.register_candidate("triton")
+if has_triton:
+    bf16_index_score_paged_kv.register("triton")(bf16_index_score_paged_kv_triton)
 
 
 # q, weights, k_full, seq_len_delta, is_causal, ke, ks, impl
@@ -48,25 +101,11 @@ def bf16_index_score_ragged_qk_dsv32(
     raise NotImplementedError
 
 
-@bf16_index_score_ragged_q_paged_k_dsv32.register_auto
-def _auto_bf16_index_score_ragged_q_paged_k_dsv32():
-    if has_triton:
-        return "triton"
-    raise NotImplementedError("bf16_index_score_ragged_q_paged_k_dsv32 requires triton")
-
-
 @bf16_index_score_ragged_qk_dsv32.register_auto
 def _auto_bf16_index_score_ragged_qk_dsv32():
     if has_triton:
         return "triton"
     return "torch"
-
-
-bf16_index_score_ragged_q_paged_k_dsv32.register_candidate("triton")
-if has_triton:
-    bf16_index_score_ragged_q_paged_k_dsv32.register("triton")(
-        bf16_index_score_ragged_q_paged_k_dsv32_triton
-    )
 
 
 @bf16_index_score_ragged_qk_dsv32.register("torch")
