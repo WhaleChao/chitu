@@ -36,11 +36,7 @@ else
 fi
 
 # Dependency install stage
-if [ "$(lscpu | grep x86)" ]; then \
-    pip install ./third_party/ascend/torch_npu-2.6.0.post1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl; \
-else \
-    pip install ./third_party/ascend/torch_npu-2.6.0.post1-cp311-cp311-manylinux_2_28_aarch64.whl; \
-fi
+pip install torch-npu==2.9.0.post9
 
 pip install -r requirements-build.txt
 

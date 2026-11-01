@@ -1,6 +1,6 @@
 # NOTE: CANN version is coupled with torch-npu version.
-# See https://github.com/Ascend/pytorch/tags for the mapping.
-FROM quay.io/ascend/cann:8.3.rc1.alpha001-910b-ubuntu22.04-py3.11 AS base
+# See https://github.com/Ascend/pytorch/blob/master/COMPATIBILITY.en.md for the mapping.
+FROM quay.io/ascend/cann:9.2.0-910b-ubuntu22.04-py3.11 AS base
 
 ARG optional_deps=''
 ARG chitu_setup_jobs=''
@@ -131,9 +131,9 @@ RUN --mount=type=secret,id=tos_id \
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     if [ "$(lscpu | grep x86)" ]; then \
-        pip install -U torch==2.6.0+cpu -i https://download.pytorch.org/whl/cpu; \
+        pip install -U torch==2.9.0+cpu -i https://download.pytorch.org/whl/cpu; \
     else \
-        pip install -U torch==2.6.0; \
+        pip install -U torch==2.9.0; \
     fi
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install pyyaml setuptools
@@ -156,4 +156,4 @@ COPY ./script/entrypoint.sh /chitu-entrypoint.sh
 ENTRYPOINT ["/chitu-entrypoint.sh", "/bin/bash", "-c", "source /usr/local/Ascend/ascend-toolkit/set_env.sh && source /usr/local/Ascend/nnal/atb/set_env.sh && exec \"$@\"", "--"]
 
 # The actual installing procedure requries a NPU device, which is not available in the `docker build` stage.
-# We delay it to an additional `docker run` stage which runs `script/install.sh`.
+# We delay it to an additional `docker run` stage which runs `script/ascend_install.sh`.

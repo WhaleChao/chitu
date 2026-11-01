@@ -1,5 +1,5 @@
 # NOTE: CANN version is coupled with torch-npu version.
-# See https://github.com/Ascend/pytorch/tags for the mapping.
+# See https://github.com/Ascend/pytorch/blob/master/COMPATIBILITY.en.md for the mapping.
 FROM quay.io/ascend/cann:8.3.rc1.alpha001-a3-ubuntu22.04-py3.11 AS base
 
 ARG optional_deps=''
@@ -109,4 +109,4 @@ COPY ./chitu/metrics/grafana ./grafana
 ENV CHITU_ASCEND_BUILD=1
 
 # The actual installing procedure requries a NPU device, which is not available in the `docker build` stage.
-# We delay it to an additional `docker run` stage which runs `script/install.sh`.
+# We delay it to an additional `docker run` stage which runs `script/ascend_a3_install.sh`.
