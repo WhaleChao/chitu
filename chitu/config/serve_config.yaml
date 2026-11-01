@@ -326,6 +326,9 @@ infer:
   #: for details.
   pcp_size: 1
 
+  #: Token layout used by Prefill Context Parallel. Currently only "interleaved".
+  pcp_layout: interleaved
+
   #: Number of Tensor Parallel ranks for non-MoE models or non-MoE modules in MoE models.
   #: See `docs/en/DEVELOPMENT.md#parallelism` for details.
   tp_size: 1

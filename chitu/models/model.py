@@ -1503,12 +1503,6 @@ class Transformer(nn.Module):
                 is_decode_stage=False,
             )
 
-        if self.moe_impl is not None:
-            self.moe_impl.prepare(
-                TaskType.Prefill,
-                int(tokens.shape[0]),
-            )
-
         h = self._pre_layers(tokens, **args)
 
         residual = None
@@ -2092,12 +2086,6 @@ class Transformer(nn.Module):
                 is_decode_stage=False,
             )
 
-        if self.moe_impl is not None:
-            self.moe_impl.prepare(
-                TaskType.Prefill,
-                batch_size,
-            )
-
         residual = None
         for it, layer in enumerate(self.non_mtp_layers):
             if self._layer_expects_residual_input():
@@ -2263,7 +2251,12 @@ class Transformer(nn.Module):
 
         for cache in self.cache_dict.values():
             cache.seq_len_delta.is_decode_stage = False
-        self.cp_context.clear_step_cache()
+        # Decide Whether the current step enable prefill cp
+        self.cp_context.set_step_active(
+            self.cp_context._should_split_prefill(
+                self.cache_dict["main"].seq_len_delta.delta_total_len
+            )
+        )
 
         # 元数据准备必须与 attn_backend 的路由判定保持一致，不能由 prefill/decode
         # 函数身份决定：开启 prefix caching 后，若 prefill 请求的前缀全部命中(PD分离)，

@@ -29,6 +29,7 @@ from typing import Optional
 import msgpack
 import zmq
 
+from chitu.finish_reason import FinishReason
 from chitu.global_vars import get_global_args
 
 logger = logging.getLogger(__name__)
@@ -245,7 +246,7 @@ def _terminate_local_inflight() -> None:
         try:
             req = task.req
             if req is not None and not req.finished:
-                req.stop_stream(error="service shutting down")
+                req.stop_stream(FinishReason.ERROR, error="service shutting down")
         except Exception:
             logger.exception(
                 "[CRASH_PROTOCOL] local in-flight termination: stop_stream failed"
@@ -256,7 +257,7 @@ def _terminate_local_inflight() -> None:
         try:
             req = task.req
             if req is not None and not req.finished:
-                req.stop_stream(error="service shutting down")
+                req.stop_stream(FinishReason.ERROR, error="service shutting down")
         except Exception:
             logger.exception(
                 "[CRASH_PROTOCOL] local in-flight termination: stop_stream failed"

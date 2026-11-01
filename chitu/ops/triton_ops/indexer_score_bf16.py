@@ -16,16 +16,16 @@ def bf16_index_score_ragged_q_paged_k_dsv32_triton_kernel(
     q_ptr,  # [s_q, H, D] bf16, s_q = b*mtp
     w_ptr,  # [s_q, H]    fp32
     k_ptr,  # [n_pages, PAGE_SIZE, D] bf16  n_pages是可用的物理page总数
-    ctx_ptr,  # [b] int32
+    ctx_ptr,  # [b, MTP] int32, visible key count for each query
     pt_ptr,  # [b, n_pages_per_seq] int32
     o_ptr,  # [s_q, max_seq_len] fp32 (pre-filled -inf)
-    max_seq_len,  # infer.max_seq_len
+    max_seq_len,  # output score width
     MTP: tl.constexpr,
     H: tl.constexpr,
     D: tl.constexpr,
     PAGE_SIZE: tl.constexpr,
     CHUNK_SIZE: tl.constexpr,  # CHUNK_SIZE = 2 * PAGE_SIZE
-    N_MAX_PAGES_PER_SEQ: tl.constexpr,  # 每个请求可以用的最大的page数量
+    N_MAX_PAGES_PER_SEQ: tl.constexpr,  # page-table width
     stride_qsq,
     stride_qh,
     stride_qd,
@@ -35,6 +35,7 @@ def bf16_index_score_ragged_q_paged_k_dsv32_triton_kernel(
     stride_kps,
     stride_kd,
     stride_cb,
+    stride_cm,
     stride_ptb,
     stride_ptp,
     stride_osq,
@@ -46,7 +47,13 @@ def bf16_index_score_ragged_q_paged_k_dsv32_triton_kernel(
     n_start = pid_n * CHUNK_SIZE
     if n_start >= max_seq_len:
         return
-    ctx_len = tl.load(ctx_ptr + pid_b * stride_cb)
+    query_ids = tl.arange(0, triton.next_power_of_2(MTP))
+    query_lengths = tl.load(
+        ctx_ptr + pid_b * stride_cb + query_ids * stride_cm,
+        mask=query_ids < MTP,
+        other=0,
+    )
+    ctx_len = tl.max(query_lengths, axis=0)
     n_end = tl.minimum(ctx_len, max_seq_len)
     if n_end <= n_start:  # 超出有效token，直接跳过，不用计算
         return
@@ -61,14 +68,14 @@ def bf16_index_score_ragged_q_paged_k_dsv32_triton_kernel(
     page_id_0 = tl.load(
         pt_ptr + pid_b * stride_ptb + page_0_idx * stride_ptp,
         mask=page_0_valid,
-        other=0,
+        other=-1,
     )
     page_1_idx = page_0_idx + 1
     page_1_valid = page_1_idx < N_MAX_PAGES_PER_SEQ
     page_id_1 = tl.load(
         pt_ptr + pid_b * stride_ptb + page_1_idx * stride_ptp,
         mask=page_1_valid,
-        other=0,
+        other=-1,
     )
 
     first_half = tl.arange(0, CHUNK_SIZE) < PAGE_SIZE
@@ -82,6 +89,7 @@ def bf16_index_score_ragged_q_paged_k_dsv32_triton_kernel(
         + page_off[:, None] * stride_kps
         + tl.arange(0, D)[None, :] * stride_kd
     )
+    valid = valid & (page_id >= 0)
     k = tl.load(
         k_ptrs, mask=valid[:, None], other=0.0
     )  # [CHUNK, D] bf16  ← 只读一次, 循环里复用
@@ -106,52 +114,48 @@ def bf16_index_score_ragged_q_paged_k_dsv32_triton_kernel(
         score = tl.sum(logits.to(tl.float32) * w_m[None, :], axis=1)  # [CHUNK] fp32
 
         o_ptrs = o_ptr + row * stride_osq + n_idx * stride_on
-        tl.store(o_ptrs, score, mask=valid)
+        query_length = tl.load(ctx_ptr + pid_b * stride_cb + m * stride_cm)
+        query_valid = valid & (n_idx < query_length)
+        tl.store(o_ptrs, score, mask=query_valid)
 
 
-def bf16_index_score_ragged_q_paged_k_dsv32_triton(
-    q: torch.Tensor,  # [s_q, H, D] bf16
-    weights: torch.Tensor,  # [s_q, H] fp32
-    k_cache: torch.Tensor,  # [n_pages, page_size, D] bf16
-    seq_len_delta: BatchedSeqLenDelta,
-    k_page_table: torch.Tensor,  # [b, n_pages_per_seq]
-    max_seq_len: int,  # infer.max_seq_len
-) -> torch.Tensor:
-    """Decode-stage bf16 paged MQA logits using triton kernel."""
-    s_q, h, d = q.shape
-    batch_size = seq_len_delta.batch_size
-    mtp = s_q // batch_size
-
-    _, page_size, _ = k_cache.shape
-    chunk_size = 2 * page_size  # kernel的每个block 一次加载 2 个 page
-    _, n_pages_per_seq = k_page_table.shape
-
-    # reshape q 为 batch view
-    # q = q.view(batch_size, mtp, h, d).reshape(s_q, h, d)
-    weights = weights.reshape(s_q, h)
-    context_lens = seq_len_delta.new.lens_tensor_device
-
-    o = torch.full(
-        (s_q, max_seq_len),
-        float("-inf"),
+def bf16_index_score_paged_kv_triton(
+    q,  # [B,M,H,D]
+    weights,  # [B*M,H]
+    k_cache,  # [N,PAGE_SIZE,D]
+    page_table,  # [B,P]
+    context_lens,  # [B,M], visible key counts
+    score_width,
+):
+    """Share each KV tile across the request's MTP query rows."""
+    batch_size, mtp, h, d = q.shape
+    q = q.reshape(batch_size * mtp, h, d)
+    weights = weights.reshape(batch_size * mtp, h)
+    k_cache = k_cache.view(k_cache.shape[0], k_cache.shape[1], -1)
+    page_size = k_cache.shape[1]
+    out = torch.full(
+        (batch_size * mtp, score_width),
+        -torch.inf,
         dtype=torch.float32,
         device=q.device,
     )
-    grid = (batch_size, triton.cdiv(max_seq_len, chunk_size))
+    if batch_size == 0 or score_width == 0:
+        return out
+    grid = (batch_size, triton.cdiv(score_width, 2 * page_size))
     bf16_index_score_ragged_q_paged_k_dsv32_triton_kernel[grid](
         q,
         weights,
         k_cache,
         context_lens,
-        k_page_table,
-        o,
-        max_seq_len,
+        page_table,
+        out,
+        score_width,
         mtp,
         h,
         d,
         page_size,
-        chunk_size,
-        n_pages_per_seq,
+        2 * page_size,
+        page_table.shape[1],
         q.stride(0),
         q.stride(1),
         q.stride(2),
@@ -161,12 +165,13 @@ def bf16_index_score_ragged_q_paged_k_dsv32_triton(
         k_cache.stride(1),
         k_cache.stride(2),
         context_lens.stride(0),
-        k_page_table.stride(0),
-        k_page_table.stride(1),
-        o.stride(0),
-        o.stride(1),
+        context_lens.stride(1),
+        page_table.stride(0),
+        page_table.stride(1),
+        out.stride(0),
+        out.stride(1),
     )
-    return o
+    return out
 
 
 # ---------------------------------------------------------------------------

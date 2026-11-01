@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from chitu.finish_reason import FinishReason
 from chitu.async_stream import AsyncDataStream
 from chitu.executor import Executor
 from chitu.output_parser import OutputState
@@ -91,7 +92,7 @@ def make_response(top_logprobs=None):
         tool_call_params=None,
         logprobs=True,
         top_logprobs=top_logprobs,
-        finish_reason="stop",
+        finish_reason=FinishReason.STOP,
         output="2",
         prompt_len=1,
         num_hit_tokens=0,

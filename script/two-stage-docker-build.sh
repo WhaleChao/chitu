@@ -29,8 +29,10 @@ shift 3
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-if [ "${dockerfile}" = "ascend.Dockerfile" ] || [ "${dockerfile}" = "ascend.a3.Dockerfile" ]; then
+if [ "${dockerfile}" = "ascend.Dockerfile" ]; then
     install_script="./script/ascend_install.sh"
+elif [ "${dockerfile}" = "ascend.a3.Dockerfile" ]; then
+    install_script="./script/ascend_a3_install.sh"
 elif [ "${dockerfile}" = "muxi.Dockerfile" ]; then
     install_script="./script/muxi_install.sh"
 elif [ "${dockerfile}" = "hygon.Dockerfile" ]; then

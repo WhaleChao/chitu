@@ -19,6 +19,7 @@ import os
 
 from chitu.distributed.coordinator import get_endpoint
 from chitu.global_vars import get_global_args
+from chitu.finish_reason import FinishReason
 from chitu.metrics.prometheus_collector import inc_completed_requests, observe_ttft
 from chitu.serve.crash import report_and_exit
 from chitu.task import Task, UserRequest
@@ -166,18 +167,19 @@ class DPTokenSender:
     def send_finish(
         self,
         request_id: str,
-        finish_reason: str = "stop",
+        finish_reason: FinishReason,
         num_hit_tokens: int = 0,
         input_cached_tokens: Optional[int] = None,
     ):
-        """Send request finish signal"""
+        """Send request finish signal."""
         # Clean up caches for this request
         self.send_token(request_id, [])
         self._remove_request(request_id)
         data = dict(
             type="finish",
             request_id=request_id,
-            finish_reason=finish_reason,
+            # The frame is a wire payload: send the spelling, not the enum member.
+            finish_reason=finish_reason.value,
             num_hit_tokens=num_hit_tokens,
             instance_id=self.instance_id,
             timestamp=time.time(),
@@ -322,10 +324,10 @@ class DPAsyncDataStream(AsyncDataStream):
                 self.token_sender.send_trace(self.task.req.trace_data)
             if error is not None:
                 self.token_sender.send_error(self.task.req.request_id, error)
-            elif self.task.req.finish_reason != "evicted":
+            elif self.task.req.finish_reason != FinishReason.EVICTED:
                 self.token_sender.send_finish(
                     self.task.req.request_id,
-                    self.task.req.finish_reason or "stop",  # Don't pass None
+                    self.task.req.finish_reason,
                     self.task.req.num_hit_tokens,
                     input_cached_tokens=self.input_cached_tokens,
                 )

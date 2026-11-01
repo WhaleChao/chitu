@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 import chitu.task as task_module
+from chitu.finish_reason import FinishReason
 from chitu.task import Task, TaskStatus, TaskType, UserRequest
 
 
@@ -16,7 +17,7 @@ def make_request(limit, stop_with_eos=False):
     req.generated_tokens = []
     req.stop_with_eos = stop_with_eos
     req.request_id = "output-limit"
-    req.finish_reason = None
+    req.finish_reason = FinishReason.UNKNOWN
     streamed = []
     req.async_stream = SimpleNamespace(
         stop_signal=False,

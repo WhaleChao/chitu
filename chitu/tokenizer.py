@@ -21,6 +21,7 @@ import tiktoken
 from tiktoken.load import load_tiktoken_bpe
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
 from transformers import AutoProcessor
+from typing_extensions import NotRequired
 
 from chitu.global_vars import get_global_args
 
@@ -33,6 +34,7 @@ Role = Literal["system", "user", "assistant"]
 class Message(TypedDict):
     role: Role
     content: str | list[str | dict]
+    reasoning_content: NotRequired[str | None]
 
 
 Dialog = Sequence[Message]
@@ -415,6 +417,25 @@ class TokenizerHF:
         return self.model.decode(t, skip_special_tokens=skip_special_tokens)
 
 
+def pin_assistant_reasoning_content(dialog: Dialog) -> list[Message]:
+    """Set `reasoning_content` to "" on assistant messages where it is not a string.
+
+    Chat templates in some models (e.g. Qwen3.5, GLM-5) fall back to scan reasoning
+    delimiters like `<think>` in `content`, if `reasoning_content` is not an `str`.
+    This violates the design that all chat-template-control strings in `content`
+    should be rendered as plain-text tokens. Thus we always set `reasoning_content`
+    as an `str`.
+    """
+    new_dialog: list[Message] = []
+    for message in dialog:
+        if message.get("role") == "assistant" and not isinstance(
+            message.get("reasoning_content"), str
+        ):
+            message = {**message, "reasoning_content": ""}
+        new_dialog.append(message)
+    return new_dialog
+
+
 def normalize_dialog(dialog):
     new_dialog = []
     for message in dialog:
@@ -530,18 +551,39 @@ class ChatFormatHF:
             return inputs["input_ids"].reshape(-1).tolist()
 
         if hasattr(self.tokenizer.model, "apply_chat_template"):
-            chat_template_kwargs = chat_template_kwargs or {}
-            # Explicitly request list[int] output (transformers 5.0+ defaults may
-            # changed). `tokenize=True` is also the HF default, but custom
-            # tokenizers such as Kimi-K3's TikTokenTokenizer default to
-            # tokenize=False and would return a rendered string instead.
-            ids = self.tokenizer.model.apply_chat_template(
-                dialog,
-                add_generation_prompt=True,
-                tokenize=True,
-                return_dict=False,
-                **chat_template_kwargs,
-            )
+            chat_template_kwargs = dict(chat_template_kwargs) or {}
+
+            # `tokenize=True` and `return_dict=False` explicitly request `list[int]`
+            # output, even though these are HF transformers' default. This is because
+            # models with custom tokenizers such as Kimi-K3's TikTokenTokenizer
+            # default to tokenize=False and would return a rendered string instead.
+            chat_template_kwargs["add_generation_prompt"] = True
+            chat_template_kwargs["tokenize"] = True
+            chat_template_kwargs["return_dict"] = False
+
+            try:
+                # Try settting `sanitize_control_tokens=True` to encode control tokens
+                # appearing in user-supplied text (message content, tools, documents)
+                # as plain text, so only the control tokens written by the chat
+                # template itself become real token ids.
+                ids = self.tokenizer.model.apply_chat_template(
+                    dialog, sanitize_control_tokens=True, **chat_template_kwargs
+                )
+            except ValueError as e:
+                if "Can't sanitize" in str(e):
+                    # `sanitize_control_tokens=True` may fail if some control tokens
+                    # can't be encoded by plain text tokens. This won't happen in well-
+                    # defined token sets.
+                    logger.warning(
+                        f"`sanitize_control_tokens=True` failed when applying chat template. "
+                        f"Falling back to applying without it. Cause: {e}."
+                    )
+                    ids = self.tokenizer.model.apply_chat_template(
+                        dialog, **chat_template_kwargs
+                    )
+                else:
+                    raise
+
             if not isinstance(ids, list):
                 raise RuntimeError(
                     "tokenizer.apply_chat_template(tokenize=True) did not return "

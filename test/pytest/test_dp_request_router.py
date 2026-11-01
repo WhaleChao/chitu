@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from omegaconf import OmegaConf
 
 from chitu.dp_request_router import RequestRouter, SchedulerStats
+from chitu.finish_reason import FinishReason
 from chitu.task import UserRequest
 from chitu.global_vars import set_global_args
 from chitu.schemas.serve_config import RouterConfig
@@ -207,10 +208,12 @@ def test_request_router_rejects_requests_expired_while_pending(monkeypatch):
     router.finished_requests = []
     router.sent_requests = []
 
-    def finish_request_before_recv_stop(request, finish_reason=None, error=None):
+    def finish_request_before_recv_stop(
+        request, finish_reason: FinishReason, error=None
+    ):
         router.finished_requests.append((request.request_id, finish_reason, error))
         request.finish_reason = finish_reason
-        request.stop_stream(error=error)
+        request.stop_stream(finish_reason, error=error)
 
     async def send_request(local_instance_id: int, request: UserRequest):
         router.sent_requests.append((local_instance_id, request.request_id))

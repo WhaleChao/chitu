@@ -7,7 +7,6 @@ from chitu.utils import try_import_platform_dep
 from .torch_backend import TorchIndexer
 from .bf16_backend import BF16Indexer
 from .nvidia_topk import NvidiaTopKMixin
-from chitu.ops import bf16_index_score_ragged_q_paged_k_dsv32
 
 triton, has_triton = try_import_platform_dep("triton")
 if has_triton:
@@ -46,17 +45,6 @@ class TritonBF16Indexer(BF16Indexer):
         self.prefill_schedule = None
         self._prefill_schedules = {}
         self._prefill_schedule_state = None
-
-    def _decode_score(self, q, weights, seq_len_delta, cache_accessor):
-        return bf16_index_score_ragged_q_paged_k_dsv32(
-            q,
-            weights,
-            cache_accessor.kv["indexer_k"],
-            seq_len_delta,
-            cache_accessor.block_table,
-            self.static_max_n,
-            impl="triton",
-        )
 
     def _prefill_schedule(self, ks, ke, is_causal, *, seq_len_delta=None):
         """Cache schedules by query selection and reuse them across model layers."""

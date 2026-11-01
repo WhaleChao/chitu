@@ -81,7 +81,7 @@ install_requires = [
     #    torch back to the official version, please use `-c` on `pip`.
     "torch",
     "torchvision",
-    "transformers[torch]==5.17.0",  # >=5.17.0 required by glm5.3-flash
+    "transformers[torch]>=5.20.0",  # >=5.20.0 required by `sanitize_control_tokens` in `apply_chat_template`
     "safetensors",
     "fire",
     "tiktoken>=0.7.0",  # Required by glm4

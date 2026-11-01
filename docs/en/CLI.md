@@ -424,6 +424,12 @@ for details.
 
 *Default: `1`.*
 
+### Argument `infer.pcp_layout`
+
+Token layout used by Prefill Context Parallel. Currently only "interleaved".
+
+*Default: `interleaved`.*
+
 ### Argument `infer.tp_size`
 
 Number of Tensor Parallel ranks for non-MoE models or non-MoE modules in MoE models.

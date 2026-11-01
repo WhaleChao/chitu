@@ -11,6 +11,7 @@ from logging import getLogger
 import torch
 
 from chitu.batched_seq_len import BatchedSeqLenDelta, BatchedSeqLenDeltaView
+from chitu.cp_utils import get_cp_context
 from chitu.kv_cache import KVCacheAccessor, DenseKVCacheAccessor, PagedKVCacheAccessor
 from chitu.native_layout import (
     ColumnOddEvenSeparatedTensor,
@@ -243,9 +244,19 @@ class AttnBackend(abc.ABC):
         self, seq_len_delta: BatchedSeqLenDelta | BatchedSeqLenDeltaView
     ) -> bool:
         """Whether `mla()` will dispatch this step to the decode kernel."""
-        return seq_len_delta.is_classic_decoding or (
-            seq_len_delta.is_decode_stage and self.decode_op_supports_mtp()
-        )
+        if seq_len_delta.is_decode_stage:
+            # Decode
+            return seq_len_delta.is_classic_decoding or self.decode_op_supports_mtp()
+        elif not get_cp_context().step_active:
+            # Prefill without PCP
+            return seq_len_delta.is_classic_decoding
+        else:
+            # Decode kernel will view query as [B, M, H, D]
+            # where B = seq_len_delta.batch_size
+            # when pcp is enabled, seq_len_delta.batch_size is global batch size
+            # while query is split into multiple sub-batches causing dimension mismatch
+            # so Prefill with PCP should always use prefill kernel
+            return False
 
     def mla(
         self,

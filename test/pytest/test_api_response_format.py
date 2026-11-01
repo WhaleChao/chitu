@@ -16,6 +16,7 @@ import chitu.serve.openai_api as chat
 import chitu.serve.responses_api as responses
 from chitu.async_stream import AsyncDataStream
 from chitu.dp_token_sender import DPTokenSender, DPAsyncDataStream
+from chitu.finish_reason import FinishReason
 from chitu.task import UserRequest
 from chitu.tool_call import ChoiceDelta
 from chitu.distributed.pd_disaggregation.kv_transfer.decode import KVManagerDecode
@@ -56,7 +57,7 @@ def request(items=(("hello", False, (None, None)),), reason="stop", cached=6):
     return SimpleNamespace(
         request_id="req-format",
         prompt_len=10,
-        finish_reason=reason,
+        finish_reason=FinishReason(reason) if isinstance(reason, str) else reason,
         tool_call_params=None,
         response_format_params=None,
         logprobs=False,
@@ -373,7 +374,7 @@ def live_req(monkeypatch):
     req.num_output_tokens = 0
     req.stop_with_eos = True
     req.save_trace_dir = None
-    req.finish_reason = "stop"
+    req.finish_reason = FinishReason.STOP
     req.tool_call_params = None
     req.start_time = 0
     req.trace_data = SimpleNamespace(debug=lambda *args: None)
@@ -413,13 +414,13 @@ def test_messages_waits_for_input_stats_but_not_full_generation(monkeypatch, fin
             event = events([await asyncio.wait_for(first, 1)])[0]
             assert event["message"]["usage"]["input_tokens"] == 4
             assert not req.finished
-            req.stop_stream()
+            req.stop_stream(FinishReason.STOP)
         elif finish == "empty":
-            req.stop_stream()
+            req.stop_stream(FinishReason.STOP)
             event = events([await asyncio.wait_for(first, 1)])[0]
             assert event["message"]["usage"]["cache_read_input_tokens"] == 6
         else:
-            req.stop_stream(error="inference failed")
+            req.stop_stream(FinishReason.ERROR, error="inference failed")
             with pytest.raises(RuntimeError, match="inference failed"):
                 await asyncio.wait_for(first, 1)
         await gen.aclose()
@@ -449,7 +450,7 @@ def test_pd_to_dp_input_stats_transport_and_latching(monkeypatch):
     )
     sender.send_finish(
         req.request_id,
-        "stop",
+        FinishReason.STOP,
         16,
         input_cached_tokens=req.async_stream.input_cached_tokens,
     )
@@ -503,7 +504,10 @@ def test_dp_stream_wrapper_sends_input_stats_or_error(monkeypatch, ending):
     req.record_prompt_cache_hit(0, 6)
     if ending in {"token", "eos"}:
         req.add_data(1 if ending == "token" else 0)
-    req.stop_stream(error="failed" if ending == "error" else None)
+    req.stop_stream(
+        FinishReason.ERROR if ending == "error" else FinishReason.STOP,
+        error="failed" if ending == "error" else None,
+    )
     if ending == "error":
         assert frames[-1]["type"] == "error"
         assert not any(f["type"] == "finish" for f in frames)
@@ -528,7 +532,12 @@ def test_legacy_peer_unknown_input_usage_does_not_become_zero(monkeypatch):
         )
         assert req.async_stream.input_cached_tokens is None
         await router._process_token_data(
-            {"type": "finish", "request_id": req.request_id, "num_hit_tokens": 6}
+            {
+                "type": "finish",
+                "request_id": req.request_id,
+                "finish_reason": FinishReason.STOP.value,
+                "num_hit_tokens": 6,
+            }
         )
         assert await req.async_stream.wait_input_cached_tokens() is None
 

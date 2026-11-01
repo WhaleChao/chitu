@@ -64,7 +64,6 @@ from chitu.ops import (
     update_singleton_paged_kv_cache,
 )
 from chitu.quantization import QuantizationRegistry
-from chitu.task_type import TaskType
 from chitu.tensor_parallel import ColumnParallelLinear, LocalLinear, RowParallelLinear
 from chitu.distributed.parallel_state import get_tp_size
 
@@ -801,8 +800,6 @@ class TransformerKimiK3(TransformerDeepSeekV3):
         self, tokens: torch.Tensor, output_token_offsets: torch.Tensor, **args
     ) -> torch.Tensor:
         freqs_cis = self.prepare_freqs_cis()
-        if self.moe_impl is not None:
-            self.moe_impl.prepare(TaskType.Prefill, int(tokens.shape[0]))
         h = self._pre_layers(tokens, **args)
         h, block_residual = self._run_layers(h, freqs_cis)
         h = self._final_attn_res(h, block_residual)
@@ -833,8 +830,6 @@ class TransformerKimiK3(TransformerDeepSeekV3):
         if self.pp_stage == 0:
             if tokens is None or hiddens is not None:
                 raise ValueError("Kimi-K3 first PP stage requires tokens only")
-            if self.moe_impl is not None:
-                self.moe_impl.prepare(TaskType.Prefill, int(tokens.shape[0]))
             h = self._pre_layers(tokens, **args)
             block_residual = None
         else:
@@ -843,8 +838,6 @@ class TransformerKimiK3(TransformerDeepSeekV3):
                     "Kimi-K3 later PP stages require an AttnRes payload only"
                 )
             h, block_residual = self._unpack_pipeline(hiddens)
-            if self.moe_impl is not None:
-                self.moe_impl.prepare(TaskType.Prefill, int(h.shape[0]))
         h, block_residual = self._run_layers(h, freqs_cis, block_residual)
         if self.pp_stage != self.pp_end_stage:
             return self._pack_pipeline(h, block_residual)

@@ -757,15 +757,12 @@ class NpuAttnBackend(RefAttnBackend):
 
         block_size = kv_cache.k.shape[1]
 
-        kv_cache.kv["k"] = (
-            kv_cache.kv["k"]
-            .view(kv_cache.k.shape[0] * kv_cache.k.shape[1], -1)
-            .unsqueeze(1)
+        # Paged K/V is passed as (num_blocks, block_size, n_kv_heads * head_dim).
+        kv_cache.kv["k"] = kv_cache.kv["k"].view(
+            kv_cache.k.shape[0], kv_cache.k.shape[1], -1
         )
-        kv_cache.kv["v"] = (
-            kv_cache.kv["v"]
-            .view(kv_cache.v.shape[0] * kv_cache.v.shape[1], -1)
-            .unsqueeze(1)
+        kv_cache.kv["v"] = kv_cache.kv["v"].view(
+            kv_cache.v.shape[0], kv_cache.v.shape[1], -1
         )
 
         output = torch.empty_like(q)

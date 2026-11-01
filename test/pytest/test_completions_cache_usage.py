@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from chitu.finish_reason import FinishReason
 from chitu.serve.openai_api import CompletionAsyncResponse
 
 
@@ -30,7 +31,7 @@ def test_completions_cache_usage(cached, mode):
     req = SimpleNamespace(
         request_id="cache-usage",
         prompt_len=10,
-        finish_reason="length",
+        finish_reason=FinishReason.LENGTH,
         async_stream=CacheStream(cached),
     )
     response = CompletionAsyncResponse(req, response_model="test-model")

@@ -30,6 +30,7 @@ from chitu.distributed.pd_disaggregation.pd_types import (
     PendingPDRequest,
     SchedulerType,
 )
+from chitu.finish_reason import FinishReason
 from chitu.task import UserRequest
 
 
@@ -41,7 +42,7 @@ class MockReq:
     prompt_tokens: list[int] = field(default_factory=list)
     max_new_tokens: int = 1
     ttft_deadline_ts: Optional[float] = None
-    finish_reason: Optional[str] = None
+    finish_reason: FinishReason = FinishReason.UNKNOWN
     # The router drops a queued request whose client already went away, which it
     # reads from ``UserRequest.finished``.
     finished: bool = False
@@ -564,7 +565,7 @@ def test_pd_router_length_admission_respects_routing_flags():
             assert router.total_requests == 1
         else:
             assert selected_requests == [request]
-            assert request.finish_reason is None
+            assert request.finish_reason is FinishReason.UNKNOWN
             assert not router._test_finished_reqs
             assert router.total_requests == 0
         assert not router.pending_pd_requests

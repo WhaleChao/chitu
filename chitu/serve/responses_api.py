@@ -20,6 +20,7 @@ from typing import (
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from chitu.finish_reason import FinishReason
 from chitu.serve.api_docs import DocField
 from chitu.tool_call.type_def import ChoiceDelta, ChoiceDeltaToolCall, ToolConfig
 from chitu.serve.request_id import gen_req_id
@@ -39,6 +40,7 @@ if not DOC_GENERATION:
     from chitu.serve.anthropic_api import resolve_requested_model_or_error
     from chitu.serve.common import (
         build_chat_template_kwargs,
+        require_reportable,
         submit_request,
     )
     from chitu.sampling.utils import validate_response_format_grammar
@@ -913,7 +915,10 @@ def _stream_source_for_response(
 def _response_status_and_incomplete_details(
     req: UserRequest,
 ) -> tuple[str, dict[str, Any] | None]:
-    if req.finish_reason == "length":
+    """``incomplete`` is the only state this API can express; everything else
+    reads as completed."""
+    reason = require_reportable(req)
+    if reason is FinishReason.LENGTH:
         return "incomplete", {"reason": "max_output_tokens"}
     return "completed", None
 
@@ -1349,7 +1354,14 @@ async def responses_stream_from_async_stream(
             },
         )
 
-    status, _ = _response_status_and_incomplete_details(user_req)
+    try:
+        status, _ = _response_status_and_incomplete_details(user_req)
+    except RuntimeError as exc:
+        yield emit(
+            "error",
+            {"type": "error", "code": "server_error", "message": str(exc)},
+        )
+        return
     output_items: list[dict[str, Any]] = []
     output_text = "".join(output_text_parts)
     if text_started:

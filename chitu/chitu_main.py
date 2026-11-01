@@ -19,6 +19,7 @@ import msgpack
 
 from chitu.backend import Backend, BackendState
 from chitu.device_type import is_nvidia, has_accelerator
+from chitu.finish_reason import FinishReason
 from chitu.global_vars import (
     get_global_args,
     get_multi_inst_config,
@@ -1134,6 +1135,12 @@ def _warmup_backend_direct(
         Backend.model.mtp_accept_indices.set(mtp_accept_indices)
 
     if not skip_model_prefill:
+        # Direct warmup bypasses the executor's per-step MoE preparation.
+        num_tokens = Backend.model.cp_context.prepare_prefill(
+            local_max_bs * prefill_seq_len
+        )
+        if Backend.model.moe_impl is not None:
+            Backend.model.moe_impl.prepare(TaskType.Prefill, num_tokens)
         Backend.model.prefill(tokens, prefill_hiddens, output_token_offsets)
 
     # Decode steps
@@ -1769,7 +1776,7 @@ def chitu_run_main_rank():
             task = TaskPool.pool.get(task_id)
             if task is None:
                 continue  # already cleaned up (e.g. pd_decode_fail won the race)
-            task.req.finish_reason = "prefill_only"
+            task.req.set_finish_reason(FinishReason.PREFILL_ONLY)
             task.set_stopped()
         task_ids += transfer_done_ids
     task_ids = TaskPool.id_list

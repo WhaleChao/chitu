@@ -7,6 +7,7 @@ from typing import Protocol, Optional
 import logging
 import time
 
+from chitu.finish_reason import FinishReason
 from chitu.global_vars import get_global_args
 from chitu.task import (
     Task,
@@ -70,8 +71,12 @@ class LocalTokenSink:
             ):
                 task.req.add_data(token, logprobs, token_idxs, notify_server=False)
         for task in task_list:
+            if task.req is None:
+                continue
             if task.user_request_finished():
-                task.req.stop_stream()
+                # A task that ends here with UNKNOWN means no engine path
+                # recorded a reason; the API layer turns that into an error.
+                task.req.stop_stream(task.req.finish_reason)
 
         def notify_all_response_in_batch():
             for task in task_list:
@@ -294,7 +299,7 @@ class PDTaskEvictHook:
         task.set_stopped()
         TaskCollector.add_update_task_ids([task.task_id])
         if getattr(task, "req", None) is not None and not task.req.finished:
-            task.req.finish_reason = "evicted"
+            task.req.set_finish_reason(FinishReason.EVICTED)
             pd_scheduler = get_pd_scheduler_instance()
             if pd_scheduler is None:
                 return
@@ -303,7 +308,7 @@ class PDTaskEvictHook:
     def on_task_remove(self, task: Task):
         if (
             getattr(task, "req", None) is not None
-            and task.req.finish_reason == "evicted"
+            and task.req.finish_reason == FinishReason.EVICTED
         ):
             pd_scheduler = get_pd_scheduler_instance()
             if pd_scheduler is None:

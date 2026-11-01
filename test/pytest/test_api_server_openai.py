@@ -13,6 +13,7 @@ import chitu.serve.middleware as serve_middleware
 import chitu.serve.openai_api as openai_api
 import chitu.serve.responses_api as responses_api
 import chitu.task as task
+from chitu.finish_reason import FinishReason
 import chitu.tool_call.utils as tool_call_utils
 
 
@@ -265,7 +266,7 @@ def test_broken_tool_call_history_is_replayed_in_completions_api(monkeypatch):
         # give the handler a finished stream instead of a scheduled request.
         user_req = await real_build_user_request(request, priority, arrival_ts)
         user_req.async_stream = StaticAsyncStream([("ok", False, (None, None))])
-        user_req.finish_reason = "stop"
+        user_req.finish_reason = FinishReason.STOP
         return user_req
 
     monkeypatch.setattr(openai_api, "build_user_request", build_with_static_stream)
@@ -335,7 +336,7 @@ def test_broken_tool_call_history_is_replayed_in_responses_api(monkeypatch):
     def from_params_with_static_stream(params):
         user_req = real_from_request_params(params)
         user_req.async_stream = StaticAsyncStream([("ok", False, (None, None))])
-        user_req.finish_reason = "stop"
+        user_req.finish_reason = FinishReason.STOP
         return user_req
 
     monkeypatch.setattr(

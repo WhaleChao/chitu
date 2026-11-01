@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import chitu.serve.responses_api as api
+from chitu.finish_reason import FinishReason
 from chitu.tool_call.type_def import ChoiceDelta
 
 
@@ -105,7 +106,7 @@ def client_and_params(monkeypatch):
         return SimpleNamespace(
             request_id="req_namespace",
             prompt_len=5,
-            finish_reason="tool_calls",
+            finish_reason=FinishReason.TOOL_CALLS,
             response_format_params=None,
             tool_call_params=SimpleNamespace(tools=params.tools),
             async_stream=SimpleNamespace(
@@ -406,7 +407,7 @@ def test_native_search_only_generates_text(
     def text_request(params):
         req = from_params(params)
         req.tool_call_params = None
-        req.finish_reason = "stop"
+        req.finish_reason = FinishReason.STOP
         req.async_stream = TextStream()
         return req
 

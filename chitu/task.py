@@ -18,6 +18,7 @@ import threading
 
 import torch
 
+from chitu.finish_reason import FinishReason
 from chitu.models.registry import ModelType
 from chitu.async_stream import AsyncDataStream
 from chitu.backend import Backend
@@ -36,6 +37,7 @@ from chitu.tool_call import (
     adjust_message_for_tool_calls,
     build_grammar,
 )
+from chitu.tokenizer import pin_assistant_reasoning_content
 from chitu.trace import Trace, TraceLevel
 from chitu.utils import dataclass_to_dict, dataclass_from_dict, max_alloc_seq_len
 from chitu.output_parser import (
@@ -197,7 +199,7 @@ class UserRequest:
         # response related
         self.output = ""
         self.async_stream = AsyncDataStream(self.enable_thinking, self.raw_output)
-        self.finish_reason = None
+        self.finish_reason: FinishReason = FinishReason.UNKNOWN
         self.num_output_tokens = 0
         # Cache hits in the current prefill attempt; reset on eviction before
         # first output and freeze once output begins.
@@ -281,6 +283,7 @@ class UserRequest:
         """Tokenize without constructing the event-loop-owned UserRequest."""
         chat_template_kwargs, _, _ = UserRequest._chat_template_state(params)
         messages = adjust_message_for_tool_calls(params.messages)
+        messages = pin_assistant_reasoning_content(messages)
         encoded = Backend.formatter.encode_dialog_prompt(
             messages, chat_template_kwargs=chat_template_kwargs
         )
@@ -512,9 +515,29 @@ class UserRequest:
     def finished(self):
         return self.async_stream.stop_signal
 
-    def stop_stream(self, error: Optional[str] = None):
+    def set_finish_reason(self, reason: FinishReason) -> None:
+        """Record why this request ended; the first real reason wins.
+
+        ``UNKNOWN`` is only the "nobody said" placeholder, so the first real
+        reason replaces it. After that a later writer is ignored: an abort that
+        arrives after ``max_new_tokens`` cut the sequence must not relabel
+        ``length`` as ``aborted``.
+        """
+        if self.finish_reason is FinishReason.UNKNOWN:
+            self.finish_reason = reason
+        elif self.finish_reason != reason:
+            logger.warning(
+                "request %s already has finish_reason=%r, ignoring %r",
+                self.request_id,
+                self.finish_reason,
+                reason,
+            )
+
+    def stop_stream(self, reason: FinishReason, error: Optional[str] = None):
+        """End the request's stream, recording why."""
         if self.finished:
             return
+        self.set_finish_reason(reason)
         self.output = repr("".join(self.async_stream.seqs))
         self.completion_time = time.monotonic()
         if self.save_trace_dir:
@@ -783,7 +806,7 @@ class Task:
     def user_request_finished(self):
         if not self.status == TaskStatus.Stopped:
             return False
-        if self.req is None or self.req.finish_reason == "stop":
+        if self.req is None or self.req.finish_reason == FinishReason.STOP:
             return True
         if DPTaskCollector.available():
             return not DPTaskCollector.is_current_running(self.task_id)
@@ -804,13 +827,13 @@ class Task:
         tokens = tokens[:remaining]
         if self.stop_with_eos and (set(tokens) & Backend.tokenizer.stop_tokens):
             self.set_stopped()
-            self.req.finish_reason = "stop"
+            self.req.set_finish_reason(FinishReason.STOP)
         elif (
             self.synced_seq_len + (1 if self.num_unsync_tokens >= 1 else 0)
             >= self.max_seq_len
         ):
             self.set_stopped()
-            self.req.finish_reason = "length"
+            self.req.set_finish_reason(FinishReason.LENGTH)
         if self.status == TaskStatus.Stopped:
             if (
                 is_classic_pd_disagg()
@@ -820,11 +843,10 @@ class Task:
             ):
                 self.pd_exec_end_logged = True
                 request_id = self.req.request_id
-                finish_reason = self.req.finish_reason or "stop"
                 logger.info(
                     "[PD_STAGE][decode.exec.end] req_id=%s finish_reason=%s",
                     request_id,
-                    finish_reason,
+                    self.req.finish_reason,
                 )
 
     def update_response_sync(self, tokens: list[int]):
@@ -1253,11 +1275,7 @@ class TaskPool:
             cls.pending_remove.discard(task_id)
 
 
-ABORTED_FINISH_REASON = "aborted"
-"""``finish_reason`` recorded for a request stopped because the user went away."""
-
-
-def _stop_aborted_request(task: Task, finish_reason: str) -> None:
+def _stop_aborted_request(task: Task, finish_reason: FinishReason) -> None:
     """End the user-facing stream of a task that is being aborted.
 
     Single-instance mode wakes the HTTP handler awaiting the stream; on a DP/PD
@@ -1267,11 +1285,12 @@ def _stop_aborted_request(task: Task, finish_reason: str) -> None:
     req = getattr(task, "req", None)
     if req is None or req.finished:
         return
-    req.finish_reason = finish_reason
-    req.stop_stream()
+    req.stop_stream(finish_reason)
 
 
-def abort_task(task_id: str, *, finish_reason: str = ABORTED_FINISH_REASON) -> bool:
+def abort_task(
+    task_id: str, *, finish_reason: FinishReason = FinishReason.ABORTED
+) -> bool:
     """Stop engine-side processing of ``task_id`` and drop it from the pool.
 
     Used when the user is gone before the request completed (client

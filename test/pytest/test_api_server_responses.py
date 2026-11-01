@@ -6,6 +6,7 @@ import chitu.serve.api_server as api_server
 import chitu.serve.common as serve_common
 import chitu.serve.middleware as serve_middleware
 import chitu.serve.responses_api as responses_api
+from chitu.finish_reason import FinishReason
 from chitu.tool_call import ChoiceDelta
 
 
@@ -103,7 +104,7 @@ def test_responses_endpoint_returns_text_response(monkeypatch):
     fake_req = SimpleNamespace(
         request_id="req_text",
         prompt_len=5,
-        finish_reason="stop",
+        finish_reason=FinishReason.STOP,
         tool_call_params=None,
         response_format_params=None,
         async_stream=StaticAsyncStream(
@@ -140,7 +141,7 @@ def test_responses_endpoint_streams_sse_events(monkeypatch):
     fake_req = SimpleNamespace(
         request_id="req_stream",
         prompt_len=3,
-        finish_reason="stop",
+        finish_reason=FinishReason.STOP,
         tool_call_params=None,
         response_format_params=None,
         async_stream=StaticAsyncStream(
@@ -177,7 +178,7 @@ def test_responses_endpoint_returns_function_call_item(monkeypatch):
     fake_req = SimpleNamespace(
         request_id="req_tool",
         prompt_len=4,
-        finish_reason="tool_calls",
+        finish_reason=FinishReason.TOOL_CALLS,
         response_format_params=None,
         tool_call_params=SimpleNamespace(
             tools=[

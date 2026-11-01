@@ -18,6 +18,7 @@ import torch.distributed
 
 from chitu.cp_utils import get_cp_context
 from chitu.backend import Backend, BackendState
+from chitu.finish_reason import FinishReason
 from chitu.global_vars import (
     get_global_args,
     get_slot_handle,
@@ -1239,7 +1240,6 @@ class Executor:
             overlap_prefix = []
             empty_body: list[ProcessStep] = [self.postprocess_send_pp_result]
             prefill_body: list[ProcessStep] = [
-                self._prepare_moe_prefill,
                 self._prepare_global_num_tokens,
                 self._prepare_dllm_prefill_cache,
                 self._dllm_prefill_forward,
@@ -1657,9 +1657,12 @@ class Executor:
 
     def _prepare_moe_prefill(self) -> None:
         """Let the MoE implementation configure its dispatchers for a prefill step."""
+        # Dispatchers need this step's CP mode and actual local rows before
+        # any rank enters either the non-empty or the empty model path.
+        num_tokens = self.cp_context.prepare_prefill(self.ctx.tasks.num_tokens)
         if self.moe_impl is None:
             return
-        self.moe_impl.prepare(TaskType.Prefill, self.ctx.tasks.num_tokens)
+        self.moe_impl.prepare(TaskType.Prefill, num_tokens)
 
     def _prepare_moe_decode(self) -> None:
         """Let the MoE implementation configure its dispatchers for a decode step."""
@@ -2123,9 +2126,18 @@ class Executor:
         prefilling_lengths = self.ctx.prefilling_lengths
         del self.ctx.prefilling_lengths
 
+        assert prefilling_lengths is not None
+        # DLLM processes block-truncated prompts, not tasks.num_tokens rows.
+        # Prepare before the empty path too, so DP ranks issue matching collectives.
+        num_tokens = sum(prefilling_lengths)
+        self.cp_context.set_step_active(False)
+        if self.moe_impl is not None:
+            self.moe_impl.prepare(TaskType.Prefill, num_tokens)
+
         # A batch that is empty, or whose prompts are all shorter than one
-        # block, has nothing for the diffusion forward to refine.
-        if not prefilling_lengths or max(prefilling_lengths) == 0:
+        # block, still participates in the other ranks' MoE communication.
+        if num_tokens == 0:
+            Backend.model.empty_prefill()
             return
 
         batch_size = tasks.num_tasks
@@ -2148,7 +2160,7 @@ class Executor:
             )
         else:
             payload = torch.empty(
-                sum(prefilling_lengths),
+                num_tokens,
                 dtype=self.get_payload_dtype(),
                 device=self.device,
             )
@@ -2314,14 +2326,14 @@ class Executor:
                     if has_eos_list[i]:
                         task.set_stopped()
                         if task.req is not None:
-                            task.req.finish_reason = "stop"
+                            task.req.set_finish_reason(FinishReason.STOP)
                     elif (
                         task.req is not None
                         and task.req.num_output_tokens + block_length
                         >= task.req.max_new_tokens
                     ):
                         task.set_stopped()
-                        task.req.finish_reason = "length"
+                        task.req.set_finish_reason(FinishReason.LENGTH)
                     task.next_block = None
 
             if block_finished_tasks:
@@ -2378,7 +2390,9 @@ class Executor:
             if task.req is None:
                 continue
             if task.user_request_finished() and not task.req.finished:
-                task.req.stop_stream()
+                # UNKNOWN here means nobody recorded a reason; the API layer
+                # reports an error for it.
+                task.req.stop_stream(task.req.finish_reason)
             else:
                 task.req.notify_server_data_added_threadsafe()
         TaskCollector.add_update_task_ids(block_tasks.task_ids)

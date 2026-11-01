@@ -23,6 +23,7 @@ import chitu.dsa_indexer_backend.torch_backend as torch_backend
 import chitu.dsa_indexer_backend.triton_backend as triton_backend
 import chitu.ops.topk as topk_module
 from chitu.kv_cache import DenseKVCacheAccessor, PagedKVCacheAccessor
+from chitu.ops import bf16_index_score_paged_kv
 from chitu.utils import max_alloc_seq_len
 from chitu.kv_cache.providers.deepseek_v3 import (
     deepseek_v3_indexer_cache_spec,
@@ -96,6 +97,30 @@ def test_chunk_size_none_when_budget_unset():
     indexer = _indexer_without_runtime_init("deepgemm")
     assert indexer._indexer_logits_chunk_bytes is None
     assert indexer.chunk_size(_seq_len_delta()) is None
+
+
+@pytest.mark.parametrize("budget", [1, 8192])
+def test_constructor_applies_explicit_chunk_budget(monkeypatch, budget):
+    args = AttrNamespace(
+        infer=AttrNamespace(
+            indexer_type="torch_bf16",
+            max_seq_len=2049,
+            mtp_size=1,
+            indexer_logits_chunk_bytes=budget,
+        ),
+        models=AttrNamespace(index_topk=2048),
+    )
+    monkeypatch.setattr(base_backend, "get_global_args", lambda: args)
+    monkeypatch.setattr(DSAIndexer, "_indexer_logits_chunk_bytes", None)
+    monkeypatch.setattr(DSAIndexer, "_auto_deciding_chunk_size", False)
+    monkeypatch.setattr(
+        dsa_indexer_module, "validate_indexer_config", lambda *_args: None
+    )
+
+    indexer = DSAIndexer("torch_bf16")
+
+    assert indexer._indexer_logits_chunk_bytes == budget
+    assert indexer.chunk_size(_seq_len_delta()) == 1
 
 
 def test_chunk_size_none_for_decode():
@@ -250,7 +275,7 @@ def test_index_score_prefill_reads_cache_then_dispatcher_scores(monkeypatch, imp
     [
         ("deepgemm", "blockfp8_index_score_ragged_q_paged_k_dsv32_deepgemm"),
         ("hygon", "bf16_index_score_ragged_q_paged_k_dsv32_hygon"),
-        ("torch_bf16", "bf16_index_score_ragged_q_paged_k_dsv32_torch_bf16"),
+        ("torch_bf16", "_decode_score"),
     ],
 )
 def test_index_score_decode_uses_paged_scorer_without_read(
@@ -286,9 +311,11 @@ def test_index_score_decode_uses_paged_scorer_without_read(
     assert out is expected
 
 
-def test_triton_bf16_decode_uses_paged_dispatcher_without_read(monkeypatch):
+@pytest.mark.parametrize("queries", [1, 3])
+def test_triton_bf16_decode_uses_paged_dispatcher_without_read(monkeypatch, queries):
     indexer = _indexer_without_runtime_init("triton_bf16")
-    expected = torch.randn(1, 4)
+    expected = torch.randn(queries, 4)
+    accessor = _paged_accessor("indexer_k")
 
     monkeypatch.setattr(
         (
@@ -302,21 +329,27 @@ def test_triton_bf16_decode_uses_paged_dispatcher_without_read(monkeypatch):
 
     dispatch_calls = []
 
-    def fake_bf16_paged_score(*args, **kwargs):
-        dispatch_calls.append(kwargs.get("impl"))
+    def fake_bf16_paged_score(q, weights, keys, table, lengths, width, *, impl):
+        assert q.shape == (1, queries, 1, 128)
+        assert weights.shape == (queries, 1)
+        assert keys is accessor.kv["indexer_k"]
+        assert table is accessor.block_table
+        assert lengths.tolist() == [list(range(4 - queries, 4))]
+        assert width == indexer.static_max_n
+        dispatch_calls.append(impl)
         return expected
 
     monkeypatch.setattr(
-        triton_backend,
-        "bf16_index_score_ragged_q_paged_k_dsv32",
+        bf16_backend,
+        "bf16_index_score_paged_kv",
         fake_bf16_paged_score,
     )
 
     out = indexer.index_score(
-        torch.empty(1, 1, 128),
-        torch.empty(1, 1),
+        torch.empty(queries, 1, 128),
+        torch.empty(queries, 1),
         _seq_len_delta(is_decode_stage=True),
-        _paged_accessor("indexer_k"),
+        accessor,
     )
 
     assert out is expected
@@ -437,7 +470,7 @@ def test_fp8_dsa_main_cache_validates_base_tensor_rules_for_packed_layout():
 def _paged_accessor(*keys: str) -> PagedKVCacheAccessor:
     return PagedKVCacheAccessor(
         torch.zeros(1, 1, dtype=torch.int32),
-        {key: torch.empty(1) for key in keys},
+        {key: torch.empty(1, 4, 128) for key in keys},
     )
 
 
@@ -997,3 +1030,157 @@ def test_triton_prefill_cached_scores_and_topk_match_reference(
                 assert schedule is schedules[start]
 
     assert len(indexer._prefill_schedules) == len(schedules)
+
+
+@pytest.mark.parametrize(
+    "queries,score_width,length_pattern",
+    [(1, 6, "shared"), (3, 3, "causal"), (3, 6, "padded")],
+)
+def test_paged_score_bounds(queries, score_width, length_pattern):
+    q = torch.ones(2, queries, 2, 8, dtype=torch.bfloat16)[..., ::2]
+    weights = torch.ones(2 * queries, 4)[:, ::2]
+    storage = torch.zeros(3, 2, 8, dtype=torch.bfloat16)
+    keys = storage[..., ::2]
+    keys.copy_(torch.arange(1, 7).reshape(3, 2, 1))
+    table = torch.tensor([[2, 0], [1, -1]], dtype=torch.int32)
+    lengths = torch.tensor([[3], [1]], dtype=torch.int32).expand(-1, queries).clone()
+    if length_pattern == "causal":
+        lengths = (lengths - queries + torch.arange(queries) + 1).clamp_min(0)
+    elif length_pattern == "padded":
+        lengths[:, -1] = 0
+    actual = bf16_index_score_paged_kv(
+        q, weights, keys, table, lengths, score_width, impl="torch"
+    )
+    expected = torch.full((2 * queries, score_width), -torch.inf)
+    for request in range(2):
+        for query in range(queries):
+            end = int(lengths[request, query])
+            for token in range(min(max(end, 0), score_width)):
+                page = int(table[request, token // 2])
+                expected[request * queries + query, token] = (
+                    keys[page, token % 2, 0] * 8
+                )
+    torch.testing.assert_close(actual, expected)
+
+
+def _paged_score_inputs(device: str):
+    """Build paged inputs with partial pages and an empty request."""
+
+    generator = torch.Generator(device=device).manual_seed(20260901)
+    batch_size, num_heads, head_dim, page_size = 3, 32, 128, 64
+    q = torch.randn(
+        batch_size,
+        num_heads,
+        head_dim,
+        dtype=torch.bfloat16,
+        device=device,
+        generator=generator,
+    )
+    weights = torch.randn(
+        batch_size,
+        num_heads,
+        dtype=torch.float32,
+        device=device,
+        generator=generator,
+    )
+    k_cache = torch.randn(
+        6,
+        page_size,
+        head_dim,
+        dtype=torch.bfloat16,
+        device=device,
+        generator=generator,
+    )
+    page_table = torch.tensor(
+        [[4, 1, 5], [2, 0, -1], [-1, -1, -1]],
+        dtype=torch.int32,
+        device=device,
+    )
+    page_counts = torch.tensor([3, 2, 0], dtype=torch.int32, device=device)
+    token_counts = torch.tensor(
+        [2 * page_size + 7, page_size + 3, 0],
+        dtype=torch.int32,
+        device=device,
+    )
+    return (
+        q,
+        weights,
+        k_cache,
+        page_table,
+        page_counts,
+        token_counts,
+    )
+
+
+def test_paged_score_reference():
+    inputs = _paged_score_inputs("cpu")
+    q, weights, k_cache, page_table, page_counts, token_counts = inputs
+    page_size = k_cache.shape[1]
+    score_width = page_table.shape[1] * page_size + 5
+
+    actual = bf16_index_score_paged_kv(
+        q.unsqueeze(1),
+        weights,
+        k_cache,
+        page_table,
+        token_counts[:, None],
+        score_width,
+        impl="torch",
+    )
+
+    expected = torch.full_like(actual, float("-inf"))
+    for batch_id in range(q.shape[0]):
+        count = int(token_counts[batch_id])
+        if count == 0:
+            continue
+        pages = page_table[batch_id, : page_counts[batch_id]].to(torch.long)
+        keys = k_cache[pages].reshape(-1, q.shape[-1])[:count]
+        logits = torch.matmul(q[batch_id], keys.transpose(0, 1))
+        expected[batch_id, :count] = (
+            (torch.relu(logits) * weights[batch_id].to(logits.dtype).unsqueeze(1))
+            .sum(dim=0)
+            .to(torch.float32)
+        )
+
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or not triton_backend.has_triton,
+    reason="requires an accelerator and Triton",
+)
+@pytest.mark.parametrize("queries", [1, 3])
+def test_paged_score_graph(queries):
+    q, weights, keys, table, _, lengths = _paged_score_inputs("cuda")
+    q = q[:, None].repeat(1, queries, 1, 1)
+    weights = weights[:, None].repeat(1, queries, 1).flatten(0, 1)
+    lengths = (
+        lengths[:, None] - queries + torch.arange(queries, device="cuda") + 1
+    ).clamp_min(0)
+    if queries > 1:
+        lengths[:, -1] = 0
+    width = table.shape[1] * keys.shape[1] + 5
+    args = (q, weights, keys, table, lengths, width)
+    bf16_index_score_paged_kv(*args, impl="triton")
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        replayed = bf16_index_score_paged_kv(*args, impl="triton")
+    address = replayed.data_ptr()
+    q.add_(0.125)
+    lengths.sub_(1).clamp_min_(0)
+    graph.replay()
+    torch.cuda.synchronize()
+    eager = bf16_index_score_paged_kv(*args, impl="triton")
+    torch.testing.assert_close(replayed, eager, rtol=0, atol=0)
+    previous = torch.backends.cuda.matmul.allow_tf32
+    try:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        expected = bf16_index_score_paged_kv(
+            q.float(), weights, keys.float(), table, lengths, width, impl="torch"
+        )
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = previous
+    finite = torch.isfinite(expected)
+    assert replayed.data_ptr() == address
+    assert torch.equal(torch.isneginf(replayed), torch.isneginf(expected))
+    torch.testing.assert_close(replayed[finite], expected[finite], rtol=1e-2, atol=2e-1)

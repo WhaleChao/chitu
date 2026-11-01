@@ -832,7 +832,7 @@ class TransformerQwen3VL(TransformerQwen3VLBase):
             rope_scaling=rope_scaling,
         )
         # NOTE: base `TransformerHFLlama` uses its own `RotaryEmbeddingHFLlama`; Qwen3-VL swaps in HF's impl.
-        self.rotary_emb = HFQwen3VLTextRotaryEmbedding(text_cfg, device=device)
+        self.rotary_emb = HFQwen3VLTextRotaryEmbedding(text_cfg).to(device)
 
     @override
     def prepare_freqs_cis(self) -> BatchedFreqsCis:
@@ -2031,7 +2031,7 @@ class TransformerQwen3VLMoe(TransformerQwen3VLMoeBase):
             rope_theta=float(getattr(self.params, "rope_theta", 5000000.0)),
             rope_scaling=rope_scaling,
         )
-        self.rotary_emb = HFQwen3VLTextRotaryEmbedding(text_cfg, device=device)
+        self.rotary_emb = HFQwen3VLTextRotaryEmbedding(text_cfg).to(device)
 
     @override
     def prepare_freqs_cis(self) -> BatchedFreqsCis:

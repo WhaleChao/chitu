@@ -9,7 +9,12 @@ import torch
 
 from chitu.distributed.comm_group import CommGroup, _get_pg_timeout
 from chitu.device_type import is_ascend
-from chitu.cp_utils import CPContext, NoOpCPContext, _set_cp_context, _reset_cp_context
+from chitu.cp_utils import (
+    create_cp_context,
+    NoOpCPContext,
+    _set_cp_context,
+    _reset_cp_context,
+)
 
 logger = getLogger(__name__)
 
@@ -530,7 +535,10 @@ def initialize_parallel_groups(
 
     # Initialize CPContext singleton after parallel groups are set up
     if pcp_size > 1:
-        _set_cp_context(CPContext(pcp_size, _PCP_GROUP))
+        from chitu.global_vars import get_global_args
+
+        layout = getattr(get_global_args().infer, "pcp_layout", "interleaved")
+        _set_cp_context(create_cp_context(pcp_size, _PCP_GROUP, layout))
     else:
         _set_cp_context(NoOpCPContext())
 

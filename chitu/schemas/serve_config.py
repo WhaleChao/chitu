@@ -53,6 +53,7 @@ class ServeAddrConfig:
 @dataclass
 class InferConfig(InferConfigLegacy):
     pcp_size: int = MISSING
+    pcp_layout: str = MISSING
     tp_size: int = MISSING
     pp_size: int = MISSING
     dp_size: int = MISSING

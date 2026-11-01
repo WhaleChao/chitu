@@ -47,6 +47,7 @@ if not DOC_GENERATION:
     from chitu.serve.crash import is_dying, set_shutting_down
     from chitu.serve.middleware import RejectOverloadMiddleware
     from chitu.task import TaskPool
+    from chitu.tokenizer import pin_assistant_reasoning_content
     from chitu.tool_call import (
         adjust_message_for_tool_calls,
         InvalidToolCallArgumentsError,
@@ -893,6 +894,7 @@ async def tokenize(request: TokenizeRequest):
             message = adjust_message_for_tool_calls(message)
         except InvalidToolCallArgumentsError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
+        message = pin_assistant_reasoning_content(message)
         tokens = Backend.formatter.encode_dialog_prompt(
             message,
             chat_template_kwargs=chat_template_kwargs,
